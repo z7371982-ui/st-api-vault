@@ -38,6 +38,10 @@ const PROVIDERS = {
     api_key_generic: ['Generic (OpenAI 兼容)', ''],
 };
 
+// Chat completion source -> prefix of its model setting / dropdown when it differs from the source name,
+// e.g. makersuite keeps its model in google_model and #model_google_select.
+const MODEL_FIELD = { makersuite: 'google' };
+
 // URLs, ids and JSON blobs live in the same store but are not pasteable API keys.
 const NOT_A_KEY = /_url$|_id$|_json$/;
 
@@ -169,6 +173,63 @@ export const st = {
         const m = await loadModule();
         if (m) return m.renameSecret(key, id, label);
         await post('/api/secrets/rename', { key, id, label });
+    },
+
+    /**
+     * Picks `model` in ST's model dropdown for the current chat completion source, the same as choosing it by hand.
+     * Reconnecting (switching key or proxy preset) reloads the list and keeps the model only if it is in the
+     * settings, so the settings are written first and the choice is applied again once ST is back online.
+     * @returns {boolean} whether there was a model dropdown to set
+     */
+    applyModel(model) {
+        const s = ctx.chatCompletionSettings;
+        if (!s || !model) return false;
+        const source = s.chat_completion_source;
+        const base = MODEL_FIELD[source] || source;
+        const apply = () => {
+            s[`${base}_model`] = model;
+            const sel = document.getElementById(`model_${base}_select`);
+            if (sel && ![...sel.options].some(o => o.value === model)) {
+                // A relay's own model id may not be in ST's built-in list; add it like an external model.
+                const group = sel.querySelector('#openai_external_category') || sel;
+                group.append(new Option(model, model));
+            }
+            const $ = globalThis.jQuery;
+            if (sel) {
+                sel.value = model;
+                if ($) $(sel).trigger('change');
+                else sel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (source === 'custom') {
+                const input = document.getElementById('custom_model_id');
+                if (input) setFieldValue(input, model);
+            }
+            ctx.saveSettingsDebounced();
+            return !!sel;
+        };
+        const ok = apply();
+        const { eventSource, eventTypes } = ctx;
+        if (eventSource?.once && eventTypes?.ONLINE_STATUS_CHANGED) {
+            let done = false;
+            const again = () => {
+                if (done) return;
+                done = true;
+                if (s[`${base}_model`] !== model || document.getElementById(`model_${base}_select`)?.value !== model) apply();
+            };
+            eventSource.once(eventTypes.ONLINE_STATUS_CHANGED, () => setTimeout(again, 50));
+            // Some sources do not reconnect at all; stop waiting after a while.
+            setTimeout(() => {
+                done = true;
+            }, 15000);
+        }
+        return ok;
+    },
+
+    currentModel() {
+        const s = ctx.chatCompletionSettings;
+        if (!s) return '';
+        const base = MODEL_FIELD[s.chat_completion_source] || s.chat_completion_source;
+        return String(s[`${base}_model`] || '');
     },
 
     /** Custom (OpenAI-compatible) source keeps its URL in chat completion settings, not in secrets. */

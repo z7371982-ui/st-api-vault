@@ -477,6 +477,11 @@ export async function pushProfile(profile) {
     const n = pushToExtensions(p);
     if (n) done.push(`${n} 个扩展的设置`);
 
+    // Editing the model of the profile ST is using right now switches ST's model as well.
+    if (p.model && isActiveInST(p) && st.currentModel() !== p.model && st.applyModel(p.model)) {
+        done.push('酒馆当前的模型');
+    }
+
     store.save();
     await reconcile();
     return done;
@@ -492,6 +497,8 @@ export async function syncToST(profile, target) {
 
     if (!target && !p.syncTarget && p.proxyRef && !p.proxyMissing) {
         if (!(await proxy.select(p.proxyRef.name))) throw new Error('酒馆的代理预设下拉框还没加载，先打开一次 API 连接面板');
+        // Switching the preset only changes URL + password; the model dropdown has to be set too.
+        if (p.model) st.applyModel(p.model);
         store.touch(p.id);
         await reconcile();
         return '反向代理';
@@ -518,6 +525,7 @@ export async function syncToST(profile, target) {
     }
 
     if (slot === 'api_key_custom' && p.url) st.setCustomUrl(p.url);
+    if (p.model) st.applyModel(p.model);
     store.touch(p.id);
     await reconcile();
     return st.providerName(slot);

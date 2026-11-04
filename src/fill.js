@@ -1,7 +1,10 @@
 // Focus-driven filling. The credential field the user last clicked into is the target,
 // so no plugin has to integrate with the vault: focus its URL or key box, pick a profile, done.
 import { store } from './store.js';
-import { KIND, classifyElement, findPartner, findModelField, fingerprint, scopeTitle, fieldLabel, setFieldValue, defaultVisible } from './detect.js';
+import {
+    KIND, classifyElement, findPartner, findModelField, fingerprint, scopeTitle, fieldLabel, setFieldValue, defaultVisible,
+    eventTarget, deepActiveElement, shadowRootOf, closestComposed,
+} from './detect.js';
 import { resolveKey } from './sync.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
@@ -55,11 +58,13 @@ function readPair(el, kind) {
     return kind === KIND.KEY ? { key: val(el), url: val(partner), partner } : { url: val(el), key: val(partner), partner };
 }
 
+// Animated inline: the page stylesheet does not reach fields inside another extension's shadow root.
 function flash(el) {
-    el.classList.remove('avm-flash');
-    void el.offsetWidth;
-    el.classList.add('avm-flash');
-    setTimeout(() => el.classList.remove('avm-flash'), 1000);
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeQuoteColor').trim() || 'rgb(139, 156, 255)';
+    el.animate?.(
+        [{ boxShadow: `0 0 0 3px ${accent}` }, { boxShadow: '0 0 0 3px transparent' }],
+        { duration: 1000, easing: 'ease-out' },
+    );
 }
 
 function bindingEntry(el, kind, profileId) {
@@ -159,7 +164,7 @@ export function focusTarget() {
 
 // ---------- positioning ----------
 
-const hostFor = el => el.closest('dialog[open]') || document.body;
+const hostFor = el => closestComposed(el, 'dialog[open]') || document.body;
 
 function mount(node, el) {
     // Inside a modal <dialog> everything outside it is inert, so the overlay must live in the dialog.
@@ -421,9 +426,20 @@ function onPopKey(e) {
 
 // ---------- page listeners ----------
 
+// `change` is not a composed event, so it never leaves a shadow root; listen on each root we see.
+const watchedRoots = new WeakSet();
+function watchShadowRoot(el) {
+    const root = shadowRootOf(el);
+    if (!root || watchedRoots.has(root)) return;
+    watchedRoots.add(root);
+    root.addEventListener('change', onChange, true);
+}
+
 function onFocusIn(e) {
-    const el = e.target;
+    // Inside a shadow root e.target is only the host; the real input is first in the composed path.
+    const el = eventTarget(e);
     if (!(el instanceof Element) || el.closest('.avm-root')) return;
+    watchShadowRoot(el);
     const kind = classifyElement(el);
     if (!kind) {
         hidePill();
@@ -439,7 +455,7 @@ function onFocusIn(e) {
 
 function onFocusOut() {
     setTimeout(() => {
-        const a = document.activeElement;
+        const a = deepActiveElement();
         if (a === target?.el || a?.closest?.('.avm-root')) return;
         if (Date.now() - pressAt < 800 || pop?.isConnected) return;
         hidePill();
@@ -456,7 +472,7 @@ async function maybeAutoFill(el) {
 /** Offers to save a key the user typed or pasted by hand somewhere. */
 function onChange(e) {
     if (filling || !store.options.capture) return;
-    const el = e.target;
+    const el = eventTarget(e);
     if (!(el instanceof Element) || el.closest('.avm-root')) return;
     const kind = classifyElement(el);
     if (!kind) return;
@@ -473,14 +489,15 @@ function onChange(e) {
 
 function onPointerDown(e) {
     if (!pop?.isConnected) return;
-    if (e.target.closest?.('.avm-pop, .avm-pill, .avm-backdrop') || e.target === target?.el) return;
+    const t = eventTarget(e);
+    if (t.closest?.('.avm-pop, .avm-pill, .avm-backdrop') || t === target?.el) return;
     closePop(false);
 }
 
 function onKeyDown(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyK') return;
     e.preventDefault();
-    const inField = currentTarget() && (document.activeElement === target.el || pop?.isConnected);
+    const inField = currentTarget() && (deepActiveElement() === target.el || pop?.isConnected);
     if (inField) togglePop();
     else openPanel();
 }

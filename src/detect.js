@@ -71,12 +71,50 @@ export function classifyDescriptor(d = {}) {
     if (!kind) {
         const value = String(d.value || '').trim();
         const ph = String(d.placeholder || '').trim();
-        if (/^https?:\/\/\S+$/i.test(value) || /^https?:\/\//i.test(ph)) kind = KIND.URL;
-        else if (KEY_SHAPE.test(value) || /^sk-/i.test(ph)) kind = KIND.KEY;
+        // Placeholders are often "如 https://api.openai.com/v1" or "例如 sk-...", so look anywhere in them.
+        if (/^https?:\/\/\S+$/i.test(value) || /https?:\/\//i.test(ph)) kind = KIND.URL;
+        else if (KEY_SHAPE.test(value) || /(^|\s)sk-/i.test(ph)) kind = KIND.KEY;
     }
     // Textareas are mostly prompts; only accept them when they clearly hold keys.
     if (tag === 'textarea' && kind !== KIND.KEY) return null;
     return kind;
+}
+
+// ---------- shadow DOM ----------
+// Extensions built with Vue / Lit often render inside an open shadow root to isolate their CSS.
+// Events reaching `document` from there are retargeted to the shadow host, and closest(),
+// activeElement and querySelectorAll all stop at the boundary, so each needs a composed variant.
+
+const isShadowRoot = n => !!n && n.nodeType === 11 && !!n.host;
+
+/** The element that really received the event, looking inside open shadow roots. */
+export function eventTarget(e) {
+    const t = e.composedPath?.()[0];
+    return t && t.nodeType === 1 ? t : e.target;
+}
+
+/** document.activeElement, followed into open shadow roots. */
+export function deepActiveElement(doc = document) {
+    let a = doc.activeElement;
+    while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+}
+
+/** The shadow root `el` lives in, or null when it is in the main document. */
+export function shadowRootOf(el) {
+    const root = el.getRootNode?.();
+    return isShadowRoot(root) ? root : null;
+}
+
+/** closest() that continues past shadow boundaries into the host's tree. */
+export function closestComposed(el, selector) {
+    let node = el;
+    while (node) {
+        const hit = node.closest(selector);
+        if (hit) return hit;
+        node = shadowRootOf(node)?.host || null;
+    }
+    return null;
 }
 
 export function isFieldElement(el) {
@@ -159,9 +197,12 @@ export function findPartner(el, wantKind, opts) {
     return findNearby(el, c => classifyElement(c) === wantKind, opts);
 }
 
+// Next container up; at the top of a shadow tree that is the shadow root itself, then its host.
+const up = n => n.parentElement || (isShadowRoot(n.parentNode) ? n.parentNode : null) || (isShadowRoot(n) ? n.host : null);
+
 function findNearby(el, predicate, { isVisible = defaultVisible, maxDepth = 5 } = {}) {
-    let node = el.parentElement;
-    for (let depth = 0; node && depth < maxDepth; depth++, node = node.parentElement) {
+    let node = up(el);
+    for (let depth = 0; node && depth < maxDepth; depth++, node = up(node)) {
         const all = [...node.querySelectorAll(FIELD_SELECTOR)];
         const self = all.indexOf(el);
         const matches = all.filter(c => c !== el && !c.disabled && predicate(c) && isVisible(c));
@@ -173,27 +214,36 @@ function findNearby(el, predicate, { isVisible = defaultVisible, maxDepth = 5 } 
                 return da - db || all.indexOf(a) - all.indexOf(b);
             })[0];
         }
-        if (node.matches(BOUNDARY_SELECTOR)) break;
+        if (node.matches?.(BOUNDARY_SELECTOR)) break;
     }
     return null;
 }
 
 /** Stable identity for a field across page reloads, used as the binding key. */
 export function fingerprint(el) {
-    if (el.id && !RANDOMISH_ID.test(el.id)) return `#${el.id}`;
+    // Fields inside a shadow root are prefixed with their host, e.g. "#bbi-app-host>>shadow input[API 密钥]".
+    const shadow = shadowRootOf(el);
+    const prefix = shadow ? `${fingerprint(shadow.host)}>>` : '';
+    if (el.id && !RANDOMISH_ID.test(el.id)) return `${prefix}#${el.id}`;
     let scope = el.parentElement;
     while (scope && (!scope.id || RANDOMISH_ID.test(scope.id))) scope = scope.parentElement;
-    const root = scope || el.ownerDocument.body;
+    const root = scope || shadow || el.ownerDocument.body;
     const sig = el.getAttribute('name') || el.getAttribute('placeholder') || `#${[...root.querySelectorAll(FIELD_SELECTOR)].indexOf(el)}`;
-    return `${scope ? `#${scope.id}` : 'body'} ${el.tagName.toLowerCase()}[${sig}]`;
+    return `${prefix}${scope ? `#${scope.id}` : shadow ? 'shadow' : 'body'} ${el.tagName.toLowerCase()}[${sig}]`;
 }
 
 /** Name of the extension / popup that owns the field, e.g. the drawer header text. */
 export function scopeTitle(el) {
-    const drawer = el.closest('.inline-drawer');
+    const drawer = closestComposed(el, '.inline-drawer');
     let t = clean(drawer?.querySelector(':scope > .inline-drawer-header, :scope > .inline-drawer-toggle')?.textContent);
-    if (!t) t = clean(el.closest('.popup, dialog, [role="dialog"]')?.querySelector('h1, h2, h3, h4')?.textContent);
-    if (!t) t = el.parentElement?.closest('[id]')?.id || '';
+    if (!t) {
+        const dlg = closestComposed(el, '.popup, dialog, [role="dialog"]');
+        t = clean(dlg?.getAttribute('aria-label')) || clean(dlg?.querySelector('h1, h2, h3, h4, [class*="title"]')?.textContent);
+    }
+    if (!t) {
+        const parent = el.parentElement || shadowRootOf(el)?.host;
+        t = parent ? closestComposed(parent, '[id]')?.id || '' : '';
+    }
     return t.slice(0, 48);
 }
 

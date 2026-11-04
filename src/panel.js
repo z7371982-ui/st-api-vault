@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { st } from './st.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST } from './sync.js';
 import { probe } from './probe.js';
-import { onTargetChange, currentTarget, fillProfile, canFill, focusTarget, KIND_LABEL } from './fill.js';
+import { KIND_LABEL } from './fill.js';
 import { isCompact, isTouch, swipeToClose, trackKeyboard, createFab } from './sheet.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
@@ -83,32 +83,19 @@ function allTags() {
 
 // ---------- rendering ----------
 
-function targetBar() {
-    const t = currentTarget();
-    if (!t) {
-        return `<div class="avm-target is-idle">
-            <i class="fa-solid fa-arrow-pointer"></i>
-            <span>点一下任意插件里的 API 地址或密钥框，这里会显示填写目标</span>
-        </div>`;
-    }
-    const bound = t.binding && store.get(t.binding.profileId);
-    return `<div class="avm-target">
-        <span class="avm-pulse" aria-hidden="true"></span>
-        <span class="avm-target-text">
-            <span class="avm-target-label">正在填写</span>
-            <span class="avm-target-name">${esc(t.scope || '当前页面')} · ${esc(t.label || KIND_LABEL[t.kind])}</span>
-        </span>
-        ${bound ? `<span class="avm-badge is-accent" title="上次填的是这个配置">${esc(bound.name)}</span>` : ''}
-        <button type="button" class="avm-icon-btn" data-act="locate" title="定位到这个输入框" aria-label="定位到输入框"><i class="fa-solid fa-crosshairs"></i></button>
+// Filling happens at the field itself (the key button next to it), because a plugin's popup
+// usually covers this panel. The panel only explains how.
+function fillTip() {
+    return `<div class="avm-target is-idle">
+        <i class="fa-solid fa-key"></i>
+        <span>要填进插件：点插件里的地址或密钥框，框边会出现钥匙按钮，点它选配置就行</span>
     </div>`;
 }
 
-function card(p, t) {
+function card(p) {
     const bindings = store.bindingsFor(p.id);
     const out = store.isOutOfSync(p);
     const synced = p.stRef && !out;
-    const fillable = t && canFill(p, t.kind);
-    const isBound = t?.binding?.profileId === p.id;
     const keyText = maskKey(p.key) || (p.keyHint ? `${p.keyHint}` : '');
     const active = isActiveInST(p);
     const badges = [
@@ -124,7 +111,7 @@ function card(p, t) {
         bindings.length ? `<span class="avm-badge" title="${esc(bindings.map(([, b]) => b.scope || b.label).filter(Boolean).join('、'))}"><i class="fa-solid fa-thumbtack"></i>${bindings.length} 处</span>` : '',
     ].join('');
 
-    return `<article class="avm-card${isBound ? ' is-bound' : ''}" data-id="${esc(p.id)}">
+    return `<article class="avm-card" data-id="${esc(p.id)}">
         <div class="avm-card-head">
             <span class="avm-avatar" style="--c:${colorFor(p.name)}">${esc(initials(p.name))}</span>
             <div class="avm-card-title">
@@ -146,11 +133,7 @@ function card(p, t) {
         </div>
         ${badges || p.tags.length ? `<div class="avm-card-meta">${badges}${p.tags.map(x => `<span class="avm-tag">#${esc(x)}</span>`).join('')}</div>` : ''}
         <div class="avm-card-actions">
-            <button type="button" class="avm-btn is-primary" data-act="fill" ${fillable ? '' : 'disabled'}
-                title="${t ? (fillable ? '填入当前输入框，同区块的另一个框会一起填' : `这个配置没有${KIND_LABEL[t.kind]}`) : '先点一下插件里的输入框'}">
-                <i class="fa-solid fa-wand-magic-sparkles"></i>${t ? `填入${KIND_LABEL[t.kind]}框` : '填入'}
-            </button>
-            <button type="button" class="avm-btn" data-act="sync" ${(p.key || (p.stRef && !p.stMissing) || (p.proxyRef && !p.proxyMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个配置' : (p.proxyRef && !p.proxyMissing && !p.syncTarget ? '在酒馆里选中这个代理预设' : '设为酒馆当前使用的密钥')}">
+            <button type="button" class="avm-btn is-primary" data-act="sync" ${(p.key || (p.stRef && !p.stMissing) || (p.proxyRef && !p.proxyMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个配置' : (p.proxyRef && !p.proxyMissing && !p.syncTarget ? '在酒馆里选中这个代理预设' : '设为酒馆当前使用的密钥')}">
                 <i class="fa-solid fa-plug"></i>${active ? '使用中' : '用于酒馆'}
             </button>
             <button type="button" class="avm-icon-btn" data-act="test" ${testing.has(p.id) ? 'disabled' : ''} title="测试连接并获取模型列表" aria-label="测试 ${esc(p.name)} 的连接">
@@ -187,11 +170,8 @@ function testSection(p) {
 }
 
 function listView() {
-    const t = currentTarget();
     let list = sortProfiles(searchProfiles(store.profiles, query));
     if (tag) list = list.filter(p => p.tags.includes(tag));
-    // Fillable profiles first while a field is targeted.
-    if (t) list.sort((a, b) => canFill(b, t.kind) - canFill(a, t.kind));
     const tags = allTags();
 
     const empty = store.profiles.length
@@ -207,7 +187,7 @@ function listView() {
         </div>`;
 
     return `
-        ${targetBar()}
+        ${store.profiles.length ? fillTip() : ''}
         <div class="avm-toolbar">
             <label class="avm-search">
                 <i class="fa-solid fa-magnifying-glass"></i>
@@ -220,7 +200,7 @@ function listView() {
             <button type="button" class="avm-tag-btn${tag ? '' : ' is-on'}" data-tag="">全部 ${store.profiles.length}</button>
             ${tags.map(x => `<button type="button" class="avm-tag-btn${x === tag ? ' is-on' : ''}" data-tag="${esc(x)}">${esc(x)}</button>`).join('')}
         </div>` : ''}
-        <div class="avm-list">${list.length ? list.map(p => card(p, t)).join('') : empty}</div>
+        <div class="avm-list">${list.length ? list.map(p => card(p)).join('') : empty}</div>
         ${store.profiles.length ? `<div class="avm-list-foot">
             <button type="button" class="avm-link-btn is-danger" data-act="clear-all"><i class="fa-solid fa-trash-can"></i>清空全部 ${store.profiles.length} 个配置</button>
         </div>` : ''}`;
@@ -244,14 +224,14 @@ function editView() {
         <form class="avm-form" data-role="editor" autocomplete="off">
             <details class="avm-paste" ${p ? '' : 'open'}>
                 <summary><i class="fa-solid fa-paste"></i>粘贴一整段文字，自动识别地址和密钥</summary>
-                <textarea data-role="paste" rows="3" placeholder="例如：地址 https://relay.example.com/v1  密钥 sk-xxxx"></textarea>
+                <textarea data-role="paste" rows="3" placeholder="例如：地址 https://api.openai.com/v1  密钥 sk-xxxx"></textarea>
                 <button type="button" class="avm-btn" data-act="parse"><i class="fa-solid fa-wand-magic"></i>识别</button>
             </details>
             <label class="avm-label">名称
                 <input name="name" type="text" value="${esc(v.name)}" placeholder="留空则用网站域名">
             </label>
             <label class="avm-label">API 地址
-                <input name="url" type="text" inputmode="url" value="${esc(v.url)}" placeholder="https://api.example.com/v1" spellcheck="false">
+                <input name="url" type="text" inputmode="url" value="${esc(v.url)}" placeholder="https://api.openai.com/v1" spellcheck="false">
             </label>
             <label class="avm-label">密钥
                 <span class="avm-input-group">
@@ -530,7 +510,6 @@ async function onClick(e) {
         case 'edit': return go('edit', id);
         case 'back': return go('list');
         case 'import': return startImport();
-        case 'locate': return focusTarget();
         case 'copy-url': return p && copy(p.url, '地址');
         case 'copy-key': {
             if (!p) return;
@@ -538,18 +517,13 @@ async function onClick(e) {
             if (key) return copy(key, '密钥');
             return toastr.warning('酒馆只给了掩码，复制不了原文', TITLE);
         }
-        case 'fill': {
-            if (!p) return;
-            const ok = await fillProfile(p);
-            if (ok && isCompact()) closePanel();
-            return;
-        }
         case 'sync': {
             if (!p) return;
             el.disabled = true;
             try {
                 const slot = await syncToST(p);
-                toastr.success(`酒馆的「${esc(slot)}」现在使用「${esc(p.name)}」`, TITLE);
+                const cur = store.get(p.id) || p;
+                toastr.success(`酒馆的「${esc(slot)}」现在使用「${esc(cur.name)}」${cur.model ? `，模型切到 ${esc(cur.model)}` : ''}`, TITLE);
             } catch (err) {
                 toastr.error(esc(err.message || String(err)), TITLE);
             } finally {
@@ -760,6 +734,5 @@ export function initPanel(context) {
         updateFab();
         if (view !== 'edit') render();
     });
-    onTargetChange(() => view === 'list' && render());
     updateFab();
 }

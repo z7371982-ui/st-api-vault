@@ -204,7 +204,7 @@ const KEY_PREFIX = /^(sk|ak|pk|rk|gsk|xai|cr|key)[-_]|^AIza/i;
 
 /**
  * Pulls a URL and an API key out of a blob of pasted text,
- * e.g. "地址: https://relay.example.com/v1  密钥: sk-abc..." -> { url, key }.
+ * e.g. "地址: https://api.openai.com/v1  密钥: sk-abc..." -> { url, key }.
  */
 export function parseCredentialText(text) {
     const s = String(text || '');
