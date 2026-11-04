@@ -47,7 +47,7 @@ const NOT_A_KEY = /_url$|_id$|_json$/;
 
 function loadModule() {
     // public/scripts/extensions/third-party/<this>/src/st.js -> public/scripts/secrets.js
-    modPromise ??= import('../../../../secrets.js').catch(err => {
+    if (!modPromise) modPromise = import('../../../../secrets.js').catch(err => {
         console.warn('[API Vault] ST secrets module not reachable, using raw endpoints', err);
         return null;
     });

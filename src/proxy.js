@@ -9,7 +9,7 @@ let modPromise = null;
 function loadModule() {
     // public/scripts/extensions/third-party/<this>/src/proxy.js -> public/scripts/openai.js
     // Same URL as ST's own import, so this is the live module and its `proxies` array.
-    modPromise ??= import('../../../../openai.js').catch(err => {
+    if (!modPromise) modPromise = import('../../../../openai.js').catch(err => {
         console.warn('[API Vault] ST openai module not reachable, proxy presets are read-only', err);
         return null;
     });

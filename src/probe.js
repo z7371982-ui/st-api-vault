@@ -35,12 +35,20 @@ function friendly(err) {
     return new ProbeError(err?.message || String(err));
 }
 
+// AbortSignal.timeout is missing on older Android WebViews (Chrome < 103), which many Termux users browse with.
+function timeoutSignal(ms) {
+    if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+    const c = new AbortController();
+    setTimeout(() => c.abort(), ms);
+    return c.signal;
+}
+
 async function postST(path, body) {
     const res = await fetch(path, {
         method: 'POST',
         headers: ctx.getRequestHeaders(),
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(TIMEOUT),
+        signal: timeoutSignal(TIMEOUT),
     });
     const data = await res.json().catch(() => null);
     return { res, data };
@@ -55,7 +63,7 @@ async function modelsViaST(body) {
 }
 
 async function modelsDirect(url, headers) {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT) });
+    const res = await fetch(url, { headers, signal: timeoutSignal(TIMEOUT) });
     if (!res.ok) throw new ProbeError(httpMessage(res.status), res.status);
     const data = await res.json().catch(() => {
         throw new ProbeError('返回的不是 JSON，地址可能不对');

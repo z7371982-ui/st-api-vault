@@ -176,7 +176,11 @@ function placeFixed(node, left, top) {
     node.style.left = `${left}px`;
     node.style.top = `${top}px`;
     // A transformed ancestor (some popups animate with transform) offsets fixed elements; undo the measured shift.
+    // Measure with our own entry animation off: its first frame (translateY(-4px) scale(.98)) would be
+    // mistaken for such a shift and leave the node a few pixels too low once the animation ends.
+    node.style.animation = 'none';
     const r = node.getBoundingClientRect();
+    node.style.animation = '';
     const dx = r.left - left;
     const dy = r.top - top;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
@@ -212,13 +216,22 @@ function ensurePill() {
     return pill;
 }
 
+/**
+ * Field the pill and picker sit next to. A pick fills the URL and key together, so for a pair
+ * the button lives on the URL field (the top of the group), whichever of the two was clicked.
+ */
+function anchorEl() {
+    const a = target?.anchor;
+    return a?.isConnected && defaultVisible(a) ? a : target?.el;
+}
+
 function updatePill() {
     const t = currentTarget();
     if (!t || !store.options.pill) {
         pill?.remove();
         return;
     }
-    const rect = t.el.getBoundingClientRect();
+    const rect = anchorEl().getBoundingClientRect();
     if (rect.bottom < 0 || rect.top > innerHeight || rect.width < 40) {
         pill?.remove();
         return;
@@ -233,7 +246,10 @@ function updatePill() {
     const h = node.offsetHeight;
     const inside = rect.width >= w + 120;
     const left = inside ? rect.right - w - 6 : rect.right + 6;
-    const top = rect.top + (Math.min(rect.height, 44) - h) / 2;
+    // Center on the field; for a tall textarea, on its first line instead of the middle.
+    const anchor = anchorEl();
+    const band = anchor.tagName === 'TEXTAREA' ? Math.min(rect.height, 44) : rect.height;
+    const top = rect.top + (band - h) / 2;
     placeFixed(node, left, top);
 }
 
@@ -343,7 +359,7 @@ function placePop() {
     if (!t) return closePop(false);
     // The bottom sheet is placed by CSS.
     if (pop.classList.contains('is-sheet')) return;
-    const rect = t.el.getBoundingClientRect();
+    const rect = anchorEl().getBoundingClientRect();
     const width = Math.min(340, innerWidth - 16);
     pop.style.width = `${width}px`;
     const left = Math.max(8, Math.min(rect.left, innerWidth - width - 8));
@@ -447,7 +463,8 @@ function onFocusIn(e) {
         return;
     }
     if (target?.el !== el) closePop(false);
-    target = { el, kind };
+    const urlField = kind === KIND.KEY ? findPartner(el, KIND.URL) : null;
+    target = { el, kind, anchor: urlField || el };
     showPill();
     emit();
     maybeAutoFill(el).catch(err => console.warn('[API Vault] auto-fill failed', err));

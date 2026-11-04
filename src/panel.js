@@ -5,7 +5,7 @@ import { st } from './st.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST } from './sync.js';
 import { probe } from './probe.js';
 import { KIND_LABEL } from './fill.js';
-import { isCompact, isTouch, swipeToClose, trackKeyboard, createFab } from './sheet.js';
+import { isCompact, isTouch, swipeToClose, trackViewport, createFab } from './sheet.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
     parseTags, parseCredentialText, findDuplicate, normalizeUrl,
@@ -727,7 +727,7 @@ export function initPanel(context) {
 
     // Phones: drag the header down to close, and keep the sheet above the on-screen keyboard.
     swipeToClose(root.querySelector('.avm-head'), root, () => closePanel());
-    trackKeyboard();
+    trackViewport();
 
     // The editor holds unsaved input, so only the other views follow live changes.
     store.onChange(() => {

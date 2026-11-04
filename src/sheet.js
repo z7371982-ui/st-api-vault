@@ -5,16 +5,31 @@ export const isCompact = () => matchMedia('(max-width: 768px)').matches;
 // No hover and a finger for a pointer: there is no keyboard shortcut to advertise.
 export const isTouch = () => matchMedia('(hover: none) and (pointer: coarse)').matches;
 
-/** Keeps the CSS variable --avm-kb at the on-screen keyboard height, so bottom sheets stay above it. */
-export function trackKeyboard() {
+/**
+ * Keeps two CSS variables in step with what is actually on screen:
+ *   --avm-vh  1% of the visible height. Used instead of dvh, which older Android browsers and WebViews
+ *             (common for Termux users) drop, and instead of vh, which on phones includes the area under
+ *             the address bar and so cuts the bottom of a sheet off.
+ *   --avm-kb  on-screen keyboard height, so bottom sheets stay above it.
+ */
+export function trackViewport() {
     const vv = window.visualViewport;
-    if (!vv) return;
+    const root = document.documentElement.style;
     const update = () => {
-        const kb = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
-        document.documentElement.style.setProperty('--avm-kb', `${kb}px`);
+        // Layout viewport height: the screen area the page really gets, without the address bar.
+        // The keyboard is handled separately by --avm-kb, so it must not shrink this one as well,
+        // otherwise a sheet loses the keyboard height twice.
+        const h = innerHeight || document.documentElement.clientHeight;
+        root.setProperty('--avm-vh', `${h / 100}px`);
+        // Pinch zoom also shrinks the visual viewport; that is not a keyboard.
+        let kb = vv && vv.scale <= 1.01 ? Math.round(h - vv.height - vv.offsetTop) : 0;
+        if (kb < 0 || kb > h * 0.75) kb = 0;
+        root.setProperty('--avm-kb', `${kb}px`);
     };
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', () => setTimeout(update, 300));
+    vv?.addEventListener('resize', update);
+    vv?.addEventListener('scroll', update);
     update();
 }
 
