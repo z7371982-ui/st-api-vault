@@ -4,7 +4,7 @@ export const MODULE = 'apiVault';
 
 export function defaultSettings() {
     return {
-        version: 1,
+        version: 2,
         profiles: [],
         // fingerprint -> { profileId, kind, scope, label, at }
         bindings: {},
@@ -14,7 +14,8 @@ export function defaultSettings() {
             pill: true,
             autoFillBound: false,
             capture: true,
-            autoImport: true,
+            // Off: nothing is imported behind the user's back; the "扫描" button lets them pick.
+            autoImport: false,
             autoSync: true,
             // Floating key button: on by default on touch screens, where there is no Alt+K.
             fab: 'auto',
@@ -26,12 +27,15 @@ export function defaultSettings() {
 export function migrate(raw) {
     const base = defaultSettings();
     if (!raw || typeof raw !== 'object') return base;
+    const options = { ...base.options, ...(raw.options && typeof raw.options === 'object' ? raw.options : {}) };
+    // v1 imported automatically by default; v2 leaves it to the scan button. Reset once for old installs.
+    if (!(raw.version >= 2)) options.autoImport = false;
     return {
-        version: 1,
+        version: 2,
         profiles: Array.isArray(raw.profiles) ? raw.profiles.map(createProfile) : [],
         bindings: raw.bindings && typeof raw.bindings === 'object' ? { ...raw.bindings } : {},
         seenRefs: Array.isArray(raw.seenRefs) ? raw.seenRefs.filter(x => typeof x === 'string') : [],
-        options: { ...base.options, ...(raw.options && typeof raw.options === 'object' ? raw.options : {}) },
+        options,
     };
 }
 

@@ -63,6 +63,15 @@ export const store = {
         this.save();
     },
 
+    /** Drops every profile and binding. Seen refs go too, so a later scan offers everything again. */
+    clearAll() {
+        const s = this.settings;
+        s.profiles = [];
+        s.bindings = {};
+        s.seenRefs = [];
+        this.save();
+    },
+
     touch(id) {
         const p = this.get(id);
         if (!p) return;

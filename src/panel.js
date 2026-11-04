@@ -23,6 +23,8 @@ let importState = null; // { loading, canView, items, picked:Set }
 // Editor-only state for the connection test, kept outside the form so re-renders do not lose it.
 let probeState = null; // { busy, ok, text, models:string[] }
 const testing = new Set(); // profile ids with a card-level test running
+let armedDelete = null; // profile id whose delete button is waiting for the confirming second tap
+let armTimer = 0;
 
 // ---------- helpers ----------
 
@@ -130,6 +132,9 @@ function card(p, t) {
                 <div class="avm-card-host">${esc(hostOf(p.url) || '未填地址')}${p.model ? ` · ${esc(p.model)}` : ''}</div>
             </div>
             <button type="button" class="avm-icon-btn" data-act="edit" title="编辑" aria-label="编辑 ${esc(p.name)}"><i class="fa-solid fa-pen"></i></button>
+            ${armedDelete === p.id
+                ? `<button type="button" class="avm-btn is-confirm" data-act="card-delete" title="再点一次删除" aria-label="确认删除 ${esc(p.name)}"><i class="fa-solid fa-trash"></i>确认删除</button>`
+                : `<button type="button" class="avm-icon-btn is-danger" data-act="card-delete" title="删除" aria-label="删除 ${esc(p.name)}"><i class="fa-solid fa-trash"></i></button>`}
         </div>
         <div class="avm-card-fields">
             <button type="button" class="avm-field" data-act="copy-url" ${p.url ? '' : 'disabled'} title="复制地址">
@@ -194,9 +199,10 @@ function listView() {
         : `<div class="avm-empty">
             <i class="fa-solid fa-box-open"></i>
             <p>还没有任何 API 配置</p>
+            <p class="avm-hint">点「一键扫描」看看酒馆和其他插件里已经存了哪些，想要哪个就勾哪个</p>
             <div class="avm-empty-actions">
-                <button type="button" class="avm-btn is-primary" data-act="new"><i class="fa-solid fa-plus"></i>新建</button>
-                <button type="button" class="avm-btn" data-act="import"><i class="fa-solid fa-file-import"></i>从酒馆导入</button>
+                <button type="button" class="avm-btn is-primary" data-act="import"><i class="fa-solid fa-magnifying-glass-plus"></i>一键扫描</button>
+                <button type="button" class="avm-btn" data-act="new"><i class="fa-solid fa-plus"></i>手动新建</button>
             </div>
         </div>`;
 
@@ -207,13 +213,17 @@ function listView() {
                 <i class="fa-solid fa-magnifying-glass"></i>
                 <input type="text" data-role="query" value="${esc(query)}" placeholder="搜索名称、地址、模型、标签" autocomplete="off" spellcheck="false" aria-label="搜索配置">
             </label>
+            <button type="button" class="avm-btn" data-act="import" title="扫描酒馆和其他插件里已保存的 API，自己选要导入哪些"><i class="fa-solid fa-magnifying-glass-plus"></i><span class="avm-hide-sm">扫描</span></button>
             <button type="button" class="avm-btn is-primary" data-act="new" title="新建配置"><i class="fa-solid fa-plus"></i><span class="avm-hide-sm">新建</span></button>
         </div>
         ${tags.length ? `<div class="avm-tags" role="group" aria-label="按标签筛选">
             <button type="button" class="avm-tag-btn${tag ? '' : ' is-on'}" data-tag="">全部 ${store.profiles.length}</button>
             ${tags.map(x => `<button type="button" class="avm-tag-btn${x === tag ? ' is-on' : ''}" data-tag="${esc(x)}">${esc(x)}</button>`).join('')}
         </div>` : ''}
-        <div class="avm-list">${list.length ? list.map(p => card(p, t)).join('') : empty}</div>`;
+        <div class="avm-list">${list.length ? list.map(p => card(p, t)).join('') : empty}</div>
+        ${store.profiles.length ? `<div class="avm-list-foot">
+            <button type="button" class="avm-link-btn is-danger" data-act="clear-all"><i class="fa-solid fa-trash-can"></i>清空全部 ${store.profiles.length} 个配置</button>
+        </div>` : ''}`;
 }
 
 function editView() {
@@ -317,7 +327,8 @@ function importView() {
             </label>`).join('')}
         </div>
         <div class="avm-form-actions">
-            <span class="avm-hint">已有的配置只会补全缺的信息，不会重复创建</span>
+            <button type="button" class="avm-btn" data-act="pick-all">${s.picked.size === s.items.length ? '全不选' : '全选'}</button>
+            <span class="avm-hint avm-hide-sm">已有的配置只会补全缺的信息，不会重复创建</span>
             <span class="avm-flex"></span>
             <button type="button" class="avm-btn is-primary" data-act="do-import" ${s.picked.size ? '' : 'disabled'}>
                 <i class="fa-solid fa-file-import"></i>导入 ${s.picked.size} 项
@@ -340,7 +351,7 @@ function settingsView() {
             ${row('pill', '输入框旁的钥匙按钮', '点进 API 地址或密钥框时，在框边上显示一个小钥匙，点开就能选配置')}
             ${row('autoFillBound', '自动填入已绑定的配置', '框是空的、之前在这里用过某个配置时，一点进去就自动填好')}
             ${row('capture', '发现新密钥时提示保存', '在插件里手动粘贴了管理器没有的密钥，弹个提示，点一下就存起来')}
-            ${row('autoImport', '自动读取酒馆里的密钥', '启动时和在酒馆里保存新密钥后，自动导入到管理器（删掉的不会再导回来）')}
+            ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
             <label class="avm-switch-row">
                 <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
@@ -587,6 +598,42 @@ async function onClick(e) {
             if (!(await confirmDialog(`删除「${cur.name}」？`, note))) return;
             store.remove(cur.id);
             return go('list');
+        }
+        case 'card-delete': {
+            if (!p) return;
+            // Two taps: the first turns the trash icon into a red "确认删除", the second deletes.
+            if (armedDelete !== p.id) {
+                armedDelete = p.id;
+                clearTimeout(armTimer);
+                armTimer = setTimeout(() => {
+                    armedDelete = null;
+                    render();
+                }, 4000);
+                return render();
+            }
+            armedDelete = null;
+            clearTimeout(armTimer);
+            store.remove(p.id);
+            toastr.success(`已删除「${esc(p.name)}」${p.stRef || p.proxyRef || p.extRefs.length ? '，酒馆和插件里的原数据没动' : ''}`, TITLE, { timeOut: 2000 });
+            return render();
+        }
+        case 'clear-all': {
+            const n = store.profiles.length;
+            if (!n) return;
+            const ok = await confirmDialog(
+                `清空全部 ${n} 个配置？`,
+                '只清空管理器里的记录和输入框绑定，酒馆里的密钥、代理预设和各插件自己的设置都不会动。清空后可以用「扫描」重新导入。',
+            );
+            if (!ok) return;
+            store.clearAll();
+            toastr.success(`已清空 ${n} 个配置`, TITLE, { timeOut: 2000 });
+            return render();
+        }
+        case 'pick-all': {
+            const s = importState;
+            if (!s?.items) return;
+            s.picked = s.picked.size === s.items.length ? new Set() : new Set(s.items.map((_, i) => i));
+            return render();
         }
         case 'do-import': {
             const s = importState;

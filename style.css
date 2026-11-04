@@ -175,6 +175,44 @@
     background: transparent;
 }
 
+/* Second tap of the card delete: solid red so it is obvious this one deletes. */
+.avm-btn.is-confirm {
+    border-color: transparent;
+    background: var(--avm-danger);
+    color: #fff;
+    font-weight: 600;
+    animation: avm-pop-in 0.16s ease-out;
+}
+
+.avm-icon-btn.is-danger:hover {
+    background: color-mix(in srgb, var(--avm-danger) 16%, transparent);
+    color: var(--avm-danger);
+}
+
+.avm-link-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    font-size: 0.82em;
+    color: var(--avm-muted);
+    cursor: pointer;
+}
+
+.avm-link-btn.is-danger:hover {
+    background: color-mix(in srgb, var(--avm-danger) 12%, transparent);
+    color: var(--avm-danger);
+}
+
+.avm-list-foot {
+    display: flex;
+    justify-content: center;
+    padding: 4px 0 8px;
+}
+
 .avm-btn:disabled,
 .avm-field:disabled {
     opacity: 0.45;
