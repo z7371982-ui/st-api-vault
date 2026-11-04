@@ -4,7 +4,7 @@ export const MODULE = 'apiVault';
 
 export function defaultSettings() {
     return {
-        version: 2,
+        version: 3,
         profiles: [],
         // fingerprint -> { profileId, kind, scope, label, at }
         bindings: {},
@@ -30,9 +30,14 @@ export function migrate(raw) {
     const options = { ...base.options, ...(raw.options && typeof raw.options === 'object' ? raw.options : {}) };
     // v1 imported automatically by default; v2 leaves it to the scan button. Reset once for old installs.
     if (!(raw.version >= 2)) options.autoImport = false;
+    let profiles = Array.isArray(raw.profiles) ? raw.profiles.map(createProfile) : [];
+    // v2 sent "用于酒馆" into ST's API key slot by default; v3 uses proxy presets. Profiles that got a
+    // slot only because of that old default go back to the preset route (masked-only keys keep working
+    // through their stRef in syncToST).
+    if (!(raw.version >= 3)) profiles = profiles.map(p => ({ ...p, syncTarget: '' }));
     return {
-        version: 2,
-        profiles: Array.isArray(raw.profiles) ? raw.profiles.map(createProfile) : [],
+        version: 3,
+        profiles,
         bindings: raw.bindings && typeof raw.bindings === 'object' ? { ...raw.bindings } : {},
         seenRefs: Array.isArray(raw.seenRefs) ? raw.seenRefs.filter(x => typeof x === 'string') : [],
         options,
@@ -94,8 +99,16 @@ function normHealth(h) {
     return { ok: !!h.ok, ms: num(h.ms, 0), at: num(h.at, 0), count: num(h.count, 0), error: str(h.error), base: str(h.base) };
 }
 
+/**
+ * extension_settings entries that belong to SillyTavern itself, not to a plugin's API config.
+ * Connection Manager profiles hold a secret *id* and a proxy preset name, and ST applies them as a whole,
+ * so the vault must never import or write back into them.
+ */
+export const ST_OWNED_SETTINGS = new Set(['connectionManager']);
+
 function normExtRef(r) {
     if (!r || !Array.isArray(r.segs) || !str(r.keyProp)) return null;
+    if (ST_OWNED_SETTINGS.has(String(r.segs[0]))) return null;
     return {
         segs: r.segs.map(String), keyProp: str(r.keyProp), urlProp: str(r.urlProp), source: str(r.source), hash: str(r.hash),
         nameProp: str(r.nameProp), nameSeen: str(r.nameSeen),

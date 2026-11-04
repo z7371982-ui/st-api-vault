@@ -42,6 +42,9 @@ const PROVIDERS = {
 // e.g. makersuite keeps its model in google_model and #model_google_select.
 const MODEL_FIELD = { makersuite: 'google' };
 
+// Chat completion sources that honour the reverse proxy settings (ST's proxySupportedSources).
+const PROXY_SOURCES = new Set(['claude', 'openai', 'mistralai', 'makersuite', 'vertexai', 'deepseek', 'xai', 'zai', 'moonshot']);
+
 // URLs, ids and JSON blobs live in the same store but are not pasteable API keys.
 const NOT_A_KEY = /_url$|_id$|_json$/;
 
@@ -223,6 +226,28 @@ export const st = {
             }, 15000);
         }
         return ok;
+    },
+
+    /**
+     * Reverse proxies only apply to some chat completion sources. Switches to OpenAI when the current
+     * one ignores them, and returns the new source's name, or '' when nothing had to change.
+     */
+    ensureProxySource() {
+        const s = ctx.chatCompletionSettings;
+        if (!s || PROXY_SOURCES.has(s.chat_completion_source)) return '';
+        const sel = document.getElementById('chat_completion_source');
+        if (!sel) return '';
+        sel.value = 'openai';
+        const $ = globalThis.jQuery;
+        if ($) $(sel).trigger('change');
+        else sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'OpenAI';
+    },
+
+    /** Whether ST is sending through a reverse proxy right now; its API key slot is ignored then. */
+    proxyInUse() {
+        const s = ctx.chatCompletionSettings;
+        return !!s?.reverse_proxy && PROXY_SOURCES.has(s.chat_completion_source);
     },
 
     currentModel() {

@@ -91,6 +91,28 @@ export const proxy = {
         return clean(preset);
     },
 
+    /**
+     * Adds a preset, or returns an existing one that already holds the same URL + password.
+     * A taken name gets a " (2)" style suffix instead of overwriting the other preset.
+     * @returns {Promise<{name:string, url:string, password:string}|null>}
+     */
+    async create({ name, url, password }) {
+        const m = await loadModule();
+        if (!Array.isArray(m?.proxies)) return null;
+        const same = m.proxies.find(p => p.name !== 'None' && clean(p).url === url && clean(p).password === password);
+        if (same) return clean(same);
+
+        const base = String(name || '').trim() || '新预设';
+        let n = base === 'None' ? 'None 1' : base;
+        for (let i = 2; m.proxies.some(p => p.name === n); i++) n = `${base} (${i})`;
+        const preset = { name: n, url, password };
+        // `proxies` is ST's live array, and the one it writes back to settings.json.
+        m.proxies.push(preset);
+        document.getElementById('openai_proxy_preset')?.append(new Option(n, n));
+        ctx.saveSettingsDebounced();
+        return clean(preset);
+    },
+
     /** Selects a preset the same way choosing it in ST's dropdown does. */
     async select(name) {
         const sel = document.getElementById('openai_proxy_preset');

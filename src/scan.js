@@ -1,11 +1,13 @@
 // Scans other extensions' saved settings for URL + key pairs they already store,
 // and reads / writes those locations so vault edits can flow back into the extensions.
 import { classifyDescriptor, KIND, tokenize } from './detect.js';
-import { MODULE, guessName, hashKey, normalizeUrl } from './vault.js';
+import { MODULE, ST_OWNED_SETTINGS, guessName, hashKey, normalizeUrl } from './vault.js';
 
 const isPlain = v => v && typeof v === 'object' && !Array.isArray(v);
 const looksUrl = v => /^https?:\/\/\S+$/i.test(v.trim());
-const looksKey = v => v.trim().length >= 8 && !/\s/.test(v.trim()) && !looksUrl(v);
+// A UUID is a reference to a secret stored in ST (e.g. "secret-id"), not a key.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const looksKey = v => v.trim().length >= 8 && !/\s/.test(v.trim()) && !looksUrl(v) && !UUID.test(v.trim());
 
 // Props that hold a human name for a channel / API entry, e.g. { name: '主力中转', url, key }.
 const NAME_TOKENS = new Set(['name', 'label', 'title', 'alias', 'remark', 'remarks', 'nickname', 'nick', 'note', 'display']);
@@ -73,7 +75,7 @@ export function scanExtensionSettings(settings, { maxDepth = 6 } = {}) {
 
     if (isPlain(settings)) {
         for (const [ext, value] of Object.entries(settings)) {
-            if (ext === MODULE) continue;
+            if (ext === MODULE || ST_OWNED_SETTINGS.has(ext)) continue;
             visit(value, [ext], 1);
         }
         // Top-level Extras API pair lives directly on extension_settings.

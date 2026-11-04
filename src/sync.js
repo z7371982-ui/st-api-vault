@@ -30,8 +30,20 @@ const refKey = r => `${r.key}:${r.id}`;
 const niceLabel = l => (l && !DATE_LABEL.test(l) ? l : '');
 
 export function isActiveInST(p) {
-    if (p.proxyRef && !p.proxyMissing && activeProxy && p.proxyRef.name === activeProxy) return true;
-    return !!p.stRef && !p.stMissing && activeRefs.has(refKey(p.stRef));
+    if (p.proxyRef && !p.proxyMissing && activeProxy && p.proxyRef.name === activeProxy && st.proxyInUse()) return true;
+    // While a reverse proxy is set, ST ignores the API key slot, so a key there is not "in use".
+    return !!p.stRef && !p.stMissing && !st.proxyInUse() && activeRefs.has(refKey(p.stRef));
+}
+
+/** Creates an ST proxy preset for a profile that has none and links the two. Returns the preset name. */
+async function linkNewProxy(p) {
+    if (!p.url) return '';
+    const r = await proxy.create({ name: p.name, url: p.url, password: p.key });
+    if (!r) return '';
+    p.proxyRef = { name: r.name, hash: proxyHash(r.url, r.password) };
+    p.proxyMissing = false;
+    store.settings.seenRefs.push(`proxy:${p.proxyRef.hash}`);
+    return r.name;
 }
 
 /** Raw key for a profile, fetched from ST (and cached) when only a masked copy is known. */
@@ -177,7 +189,6 @@ export function importItems(items) {
                 patch.stRef = it.stRef;
                 patch.stLabel = it.label || '';
                 patch.stMissing = false;
-                patch.syncTarget = p.syncTarget || it.stRef.key;
                 if (p.key) patch.syncedHash = hashKey(p.key);
             }
             if (it.proxyRef && (!p.proxyRef || p.proxyMissing)) {
@@ -210,7 +221,8 @@ export function importItems(items) {
             stRef: it.stRef,
             stLabel: it.label || '',
             proxyRef: it.proxyRef,
-            syncTarget: it.stRef?.key || '',
+            // Empty = "用于酒馆" goes through a proxy preset. Masked-only secrets fall back to their slot in syncToST.
+            syncTarget: '',
             syncedHash: it.key && it.stRef ? hashKey(it.key) : '',
             extRefs: it.extRefs || [],
             tags: [it.source],
@@ -450,13 +462,20 @@ async function pushKeyToST(p) {
  * Pushes an edited profile out to ST and linked extensions.
  * @returns {Promise<string[]>} human-readable list of what was updated
  */
-export async function pushProfile(profile) {
+export async function pushProfile(profile, { isNew = false } = {}) {
     if (!store.get(profile.id) || !store.options.autoSync) return [];
     // Fresh view of ST first, so we know which key is active and whether ours still exists.
     await reconcile().catch(err => console.warn('[API Vault] reconcile failed', err));
     const p = store.get(profile.id);
     if (!p) return [];
     const done = [];
+
+    // A profile created here shows up in ST's proxy preset list, where relays normally live.
+    if (isNew && p.url && !p.proxyRef && !p.syncTarget) {
+        busyUntil = Date.now() + 3000;
+        const name = await linkNewProxy(p);
+        if (name) done.push(`酒馆的代理预设「${name}」`);
+    }
 
     if (p.stRef && !p.stMissing) {
         const keyChanged = p.key && p.syncedHash !== hashKey(p.key) && p.stRef.key === (p.syncTarget || p.stRef.key);
@@ -494,17 +513,31 @@ export async function pushProfile(profile) {
  */
 export async function syncToST(profile, target) {
     const p = store.get(profile.id) || profile;
+    // A key imported from secrets.json with only a mask cannot become a proxy preset; switch its slot instead.
+    const maskedOnly = !p.key && p.stRef && !p.stMissing ? p.stRef.key : '';
+    const slotTarget = target || (p.syncTarget && p.syncTarget !== 'none' ? p.syncTarget : '') || maskedOnly;
 
-    if (!target && !p.syncTarget && p.proxyRef && !p.proxyMissing) {
-        if (!(await proxy.select(p.proxyRef.name))) throw new Error('酒馆的代理预设下拉框还没加载，先打开一次 API 连接面板');
+    // Default: use it through a reverse proxy preset, which is how relays are set up in ST.
+    // Only an explicitly chosen secret slot (advanced) goes into secrets.json.
+    if (!slotTarget) {
+        if (!p.url) throw new Error('这个配置没有填地址，没法设成反向代理');
+        busyUntil = Date.now() + 3000;
+        if (!p.proxyRef || p.proxyMissing) {
+            const live = store.get(p.id);
+            if (!(await linkNewProxy(live || p))) throw new Error('没能在酒馆里创建代理预设，先打开一次 API 连接面板');
+            store.save();
+        }
+        const ref = (store.get(p.id) || p).proxyRef;
+        st.ensureProxySource();
+        if (!(await proxy.select(ref.name))) throw new Error('酒馆的代理预设下拉框还没加载，先打开一次 API 连接面板');
         // Switching the preset only changes URL + password; the model dropdown has to be set too.
         if (p.model) st.applyModel(p.model);
         store.touch(p.id);
         await reconcile();
-        return '反向代理';
+        return `代理预设「${ref.name}」`;
     }
 
-    const slot = target || p.syncTarget || st.suggestTarget(p.url);
+    const slot = slotTarget;
     busyUntil = Date.now() + 3000;
     const key = await resolveKey(p);
     const linked = p.stRef?.key === slot && !p.stMissing;

@@ -5,7 +5,7 @@ import {
     KIND, classifyElement, findPartner, findModelField, fingerprint, scopeTitle, fieldLabel, setFieldValue, defaultVisible,
     eventTarget, deepActiveElement, shadowRootOf, closestComposed,
 } from './detect.js';
-import { resolveKey } from './sync.js';
+import { resolveKey, syncToST } from './sync.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByKey, guessName } from './vault.js';
@@ -13,6 +13,8 @@ import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
 const TITLE = 'API 管理器';
 // ST's own key inputs offer saved secret ids (UUIDs) in a datalist; those are not keys.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// ST's own reverse proxy URL / password inputs. They mirror the selected proxy preset.
+const ST_PROXY_FIELDS = new Set(['openai_reverse_proxy', 'openai_proxy_access_key']);
 export const KIND_LABEL = { [KIND.KEY]: '密钥', [KIND.URL]: '地址' };
 const other = kind => (kind === KIND.KEY ? KIND.URL : KIND.KEY);
 
@@ -27,6 +29,8 @@ let backdrop = null;
 // Time of the last press on the pill. On touch screens the tap can blur the field before `click`
 // arrives, and the pill must survive that blur.
 let pressAt = 0;
+let rescueTimer = 0;
+let rescued = false;
 let openPanel = () => {};
 const listeners = new Set();
 const prompted = new Set();
@@ -81,6 +85,21 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
     if (!el?.isConnected) {
         if (!quiet) toastr.warning('先点一下插件里的 API 地址或密钥输入框', TITLE);
         return false;
+    }
+    // Writing ST's reverse proxy fields directly leaves the preset dropdown on one relay while the URL and
+    // password belong to another, and ST later reloads the preset over them. Switch the preset instead.
+    // Never done silently (auto-fill): ST's connection only changes on an explicit pick.
+    if (ST_PROXY_FIELDS.has(el.id)) {
+        if (quiet) return false;
+        try {
+            const what = await syncToST(profile);
+            toastr.success(`酒馆现在使用${esc(what)}`, TITLE, { timeOut: 1800 });
+            emit();
+            return true;
+        } catch (err) {
+            toastr.error(esc(err.message || String(err)), TITLE);
+            return false;
+        }
     }
     const kind = classifyElement(el) || target?.kind;
     if (!kind) return false;
@@ -164,11 +183,68 @@ export function focusTarget() {
 
 // ---------- positioning ----------
 
-const hostFor = el => closestComposed(el, 'dialog[open]') || document.body;
+/**
+ * The floating plugin window `el` sits in: its nearest position:fixed ancestor. Null when there is none,
+ * or when that window would clip our fixed nodes (it is their containing block and hides overflow).
+ */
+function floatingWindowOf(el) {
+    // Walks up through shadow boundaries too: a Vue / Lit plugin's window usually lives in a shadow root.
+    const up = n => n.parentElement || shadowRootOf(n)?.host || null;
+    for (let n = up(el); n && n !== document.body && n !== document.documentElement; n = up(n)) {
+        const cs = getComputedStyle(n);
+        if (cs.position !== 'fixed') continue;
+        return containsFixed(n) && cs.overflow !== 'visible' ? null : n;
+    }
+    return null;
+}
 
-function mount(node, el) {
-    // Inside a modal <dialog> everything outside it is inert, so the overlay must live in the dialog.
-    const host = hostFor(el);
+/** Whether `n` is the containing block of position:fixed descendants (transform, filter, contain, ...). */
+function containsFixed(n) {
+    const cs = getComputedStyle(n);
+    return cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none'
+        || (cs.backdropFilter && cs.backdropFilter !== 'none') || (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none')
+        || /transform|filter|perspective/.test(cs.willChange) || /paint|layout|strict|content/.test(cs.contain);
+}
+
+/**
+ * Where the pill and picker are mounted for `el`.
+ *   - Inside a modal <dialog> everything outside it is inert, so they go into the dialog.
+ *   - Floating plugin windows close themselves on clicks outside them. Mounted inside the window,
+ *     a tap on the key button or the picker counts as inside, so the window stays open.
+ *     This works for windows inside a shadow root too; our stylesheet is linked in there (see mount).
+ */
+function hostFor(el) {
+    return closestComposed(el, 'dialog[open]') || floatingWindowOf(el) || document.body;
+}
+
+function targetHost() {
+    if (!target?.el) return document.body;
+    if (!target.host?.isConnected) target.host = hostFor(target.el);
+    return target.host;
+}
+
+// Page styles do not reach into a shadow root, so our stylesheet is linked into each one we mount in.
+const STYLE_URL = new URL('../style.css', import.meta.url).href;
+const styledRoots = new WeakSet();
+function ensureStyles(host) {
+    const root = shadowRootOf(host);
+    if (!root || styledRoots.has(root)) return;
+    styledRoots.add(root);
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = STYLE_URL;
+    link.className = 'avm-root';
+    root.append(link);
+}
+
+/**
+ * @param {{sheet?: boolean}} [opts] The phone bottom sheet and its backdrop are laid out by CSS against the
+ *   screen; inside a transformed window they would be laid out against the window instead, so they stay on body.
+ */
+function mount(node, { sheet = false } = {}) {
+    let host = targetHost();
+    if (sheet && host !== document.body && host.tagName !== 'DIALOG' && containsFixed(host)) host = document.body;
+    ensureStyles(host);
     if (node.parentNode !== host) host.append(node);
 }
 
@@ -222,8 +298,28 @@ function ensurePill() {
     pill.addEventListener('mousedown', e => e.preventDefault());
     pill.addEventListener('pointerdown', () => {
         pressAt = Date.now();
+        rescued = false;
+        // Some windows still close on the press (they listen before us). The pill goes with them and
+        // `click` never arrives, so check shortly after: no field left means open the manager instead.
+        clearTimeout(rescueTimer);
+        rescueTimer = setTimeout(() => {
+            if (currentTarget()) return;
+            rescued = true;
+            hidePill();
+            openPanel();
+        }, 350);
     });
-    pill.addEventListener('click', () => togglePop());
+    pill.addEventListener('click', () => {
+        clearTimeout(rescueTimer);
+        if (rescued) return;
+        // Same case as above, when the window closed between press and release.
+        if (!currentTarget()) {
+            hidePill();
+            openPanel();
+            return;
+        }
+        togglePop();
+    });
     return pill;
 }
 
@@ -258,7 +354,7 @@ function updatePill() {
     // Only rewrite when it changed; re-placing runs several times while a popup settles.
     const html = `<i class="fa-solid fa-key"></i>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
     if (node.innerHTML !== html) node.innerHTML = html;
-    mount(node, t.el);
+    mount(node);
     const w = node.offsetWidth;
     const h = node.offsetHeight;
     const inside = rect.width >= w + 120;
@@ -409,9 +505,9 @@ function openPop() {
             // Close on click, not on pointerdown, so the tap does not land on the page underneath.
             backdrop.addEventListener('click', () => closePop(false));
         }
-        mount(backdrop, t.el);
+        mount(backdrop, { sheet });
     }
-    mount(pop, t.el);
+    mount(pop, { sheet });
     popIndex = 0;
     const input = pop.querySelector('input');
     input.value = '';

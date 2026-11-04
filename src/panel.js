@@ -133,7 +133,7 @@ function card(p) {
         </div>
         ${badges || p.tags.length ? `<div class="avm-card-meta">${badges}${p.tags.map(x => `<span class="avm-tag">#${esc(x)}</span>`).join('')}</div>` : ''}
         <div class="avm-card-actions">
-            <button type="button" class="avm-btn is-primary" data-act="sync" ${(p.key || (p.stRef && !p.stMissing) || (p.proxyRef && !p.proxyMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个配置' : (p.proxyRef && !p.proxyMissing && !p.syncTarget ? '在酒馆里选中这个代理预设' : '设为酒馆当前使用的密钥')}">
+            <button type="button" class="avm-btn is-primary" data-act="sync" ${(p.key || (p.stRef && !p.stMissing) || (p.proxyRef && !p.proxyMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个配置' : (p.syncTarget || (!p.key && p.stRef) ? '设为酒馆 API 密钥栏当前使用的密钥' : '在酒馆的代理预设里选中它（没有的话会先创建）')}">
                 <i class="fa-solid fa-plug"></i>${active ? '使用中' : '用于酒馆'}
             </button>
             <button type="button" class="avm-icon-btn" data-act="test" ${testing.has(p.id) ? 'disabled' : ''} title="测试连接并获取模型列表" aria-label="测试 ${esc(p.name)} 的连接">
@@ -250,12 +250,14 @@ function editView() {
                     <input name="tags" type="text" value="${esc(v.tags.join(', '))}" placeholder="主力, 翻译, 备用">
                 </label>
             </div>
-            <label class="avm-label">同步到酒馆
+            <label class="avm-label">在酒馆里怎么用
                 <select name="syncTarget">
-                    <option value="">不同步，只在管理器里用</option>
-                    ${slots.map(k => `<option value="${esc(k)}" ${k === current ? 'selected' : ''}>${esc(st.providerName(k))}</option>`).join('')}
+                    <option value="" ${current ? '' : 'selected'}>反向代理预设（推荐）</option>
+                    <optgroup label="高级：写进下面的 API 密钥栏">
+                        ${slots.map(k => `<option value="${esc(k)}" ${k === current ? 'selected' : ''}>${esc(st.providerName(k))} 密钥</option>`).join('')}
+                    </optgroup>
                 </select>
-                <span class="avm-hint">点「用于酒馆」时写进这个酒馆密钥槽并设为当前使用。自定义 (OpenAI 兼容) 会顺便填上地址。</span>
+                <span class="avm-hint">默认存成酒馆「反向代理 → 代理预设」里的一项，点「用于酒馆」就是在下拉框里选中它。只有直接用官方 API、不走反代时，才需要选下面的密钥栏。</span>
             </label>
             <label class="avm-label">备注
                 <textarea name="note" rows="2" placeholder="额度、到期时间、用途……">${esc(v.note)}</textarea>
@@ -421,7 +423,7 @@ async function saveForm(form) {
 
     let pushed = [];
     try {
-        pushed = await pushProfile(p);
+        pushed = await pushProfile(p, { isNew: !existing });
     } catch (err) {
         toastr.error(`已保存，但同步失败：${esc(err.message || String(err))}`, TITLE);
         return;
