@@ -5,6 +5,7 @@ import { st } from './st.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST } from './sync.js';
 import { probe } from './probe.js';
 import { onTargetChange, currentTarget, fillProfile, canFill, focusTarget, KIND_LABEL } from './fill.js';
+import { isCompact, isTouch, swipeToClose, trackKeyboard, createFab } from './sheet.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
     parseTags, parseCredentialText, findDuplicate, normalizeUrl,
@@ -67,6 +68,11 @@ function healthBadge(p) {
     return `<span class="avm-badge is-bad" title="${esc(`${when}：${h.error}`)}"><i class="fa-solid fa-circle-xmark"></i>连接失败</span>`;
 }
 
+function activeTitle(p) {
+    if (p.proxyRef && !p.proxyMissing && !(p.stRef && !p.stMissing)) return `酒馆当前选中的代理预设是「${p.proxyRef.name}」`;
+    return `酒馆「${st.providerName(p.stRef?.key)}」当前正在用这个密钥`;
+}
+
 function allTags() {
     const count = new Map();
     for (const p of store.profiles) for (const t of p.tags) count.set(t, (count.get(t) || 0) + 1);
@@ -105,7 +111,9 @@ function card(p, t) {
     const active = isActiveInST(p);
     const badges = [
         healthBadge(p),
-        active ? `<span class="avm-badge is-accent" title="酒馆「${esc(st.providerName(p.stRef.key))}」当前正在用这个密钥"><i class="fa-solid fa-bolt"></i>酒馆在用</span>` : '',
+        active ? `<span class="avm-badge is-accent" title="${esc(activeTitle(p))}"><i class="fa-solid fa-bolt"></i>酒馆在用</span>` : '',
+        p.proxyRef && !p.proxyMissing ? `<span class="avm-badge is-ok" title="${esc(`酒馆的反向代理预设「${p.proxyRef.name}」，在这里改了会同步回去`)}"><i class="fa-solid fa-route"></i>代理预设</span>` : '',
+        p.proxyMissing ? '<span class="avm-badge is-warn" title="酒馆里这个代理预设已被删除"><i class="fa-solid fa-unlink"></i>预设已删除</span>' : '',
         p.stMissing ? '<span class="avm-badge is-warn" title="酒馆里这条密钥已被删除，点「用于酒馆」可以重新写入"><i class="fa-solid fa-unlink"></i>酒馆已删除</span>' : '',
         p.extRefs.length ? `<span class="avm-badge" title="${esc(`同步到：${[...new Set(p.extRefs.map(r => r.source))].join('、')}`)}"><i class="fa-solid fa-puzzle-piece"></i>${p.extRefs.length} 个扩展</span>` : '',
         synced && !active && !p.stMissing ? `<span class="avm-badge is-ok" title="已存进酒馆：${esc(st.providerName(p.stRef.key))}"><i class="fa-solid fa-link"></i>酒馆</span>` : '',
@@ -137,7 +145,7 @@ function card(p, t) {
                 title="${t ? (fillable ? '填入当前输入框，同区块的另一个框会一起填' : `这个配置没有${KIND_LABEL[t.kind]}`) : '先点一下插件里的输入框'}">
                 <i class="fa-solid fa-wand-magic-sparkles"></i>${t ? `填入${KIND_LABEL[t.kind]}框` : '填入'}
             </button>
-            <button type="button" class="avm-btn" data-act="sync" ${(p.key || (p.stRef && !p.stMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个密钥' : '设为酒馆当前使用的密钥'}">
+            <button type="button" class="avm-btn" data-act="sync" ${(p.key || (p.stRef && !p.stMissing) || (p.proxyRef && !p.proxyMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个配置' : (p.proxyRef && !p.proxyMissing && !p.syncTarget ? '在酒馆里选中这个代理预设' : '设为酒馆当前使用的密钥')}">
                 <i class="fa-solid fa-plug"></i>${active ? '使用中' : '用于酒馆'}
             </button>
             <button type="button" class="avm-icon-btn" data-act="test" ${testing.has(p.id) ? 'disabled' : ''} title="测试连接并获取模型列表" aria-label="测试 ${esc(p.name)} 的连接">
@@ -334,8 +342,14 @@ function settingsView() {
             ${row('capture', '发现新密钥时提示保存', '在插件里手动粘贴了管理器没有的密钥，弹个提示，点一下就存起来')}
             ${row('autoImport', '自动读取酒馆里的密钥', '启动时和在酒馆里保存新密钥后，自动导入到管理器（删掉的不会再导回来）')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
+            <label class="avm-switch-row">
+                <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
+                <input type="checkbox" class="avm-switch" data-opt="fab" ${fabEnabled() ? 'checked' : ''}>
+            </label>
             <div class="avm-note"><i class="fa-regular fa-keyboard"></i><div>
-                <b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开管理器。<br>
+                ${isCompact() || isTouch()
+                    ? '<b>手机上</b>：点进插件的地址或密钥框，框边会出现钥匙按钮，点它从底部弹出配置列表；屏幕边上的悬浮钥匙可以拖动，点它打开管理器。<br>'
+                    : '<b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开管理器。<br>'}
                 配置保存在酒馆的扩展设置里（settings.json），和酒馆本身的设置一起备份。
             </div></div>
         </div>`;
@@ -408,6 +422,9 @@ async function saveForm(form) {
     if (existing && !data.key && existing.stRef) delete data.key;
     // A successful test in the editor already fetched the models; keep them.
     if (probeState?.ok) Object.assign(data, { models: probeState.models, modelsAt: Date.now(), health: probeState.health });
+    // A name typed by the user is never replaced by names found later in ST or extensions.
+    const typedName = !!data.name && data.name !== existing?.name;
+    if (typedName || !data.name) data.nameAuto = !data.name;
     const p = store.upsert({ ...data, id: editId || undefined });
     go('list');
 
@@ -513,7 +530,7 @@ async function onClick(e) {
         case 'fill': {
             if (!p) return;
             const ok = await fillProfile(p);
-            if (ok && matchMedia('(max-width: 768px)').matches) closePanel();
+            if (ok && isCompact()) closePanel();
             return;
         }
         case 'sync': {
@@ -600,16 +617,49 @@ function onChange(e) {
 
 // ---------- open / close ----------
 
+let fab = null;
+let panelBackdrop = null;
+
+/** "auto" means: show the floating button only where there is no keyboard shortcut. */
+function fabEnabled() {
+    const v = store.options.fab;
+    return v === 'auto' ? isTouch() || isCompact() : !!v;
+}
+
+function updateFab() {
+    const on = fabEnabled();
+    if (on && !fab) {
+        fab = createFab({
+            onTap: () => togglePanel(),
+            getPos: () => store.options.fabPos,
+            setPos: pos => store.setOption('fabPos', pos),
+        });
+    }
+    if (fab) fab.hidden = !on || root.classList.contains('is-open');
+}
+
 export function openPanel() {
     root.classList.add('is-open');
     root.setAttribute('aria-hidden', 'false');
     if (view === 'import' && !importState) view = 'list';
+    // Phones: dim the chat behind the sheet; tapping it closes the sheet.
+    if (isCompact()) {
+        if (!panelBackdrop) {
+            panelBackdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop avm-panel-backdrop' });
+            panelBackdrop.addEventListener('click', () => closePanel());
+        }
+        document.body.append(panelBackdrop);
+    }
     render();
+    updateFab();
 }
 
 export function closePanel() {
     root.classList.remove('is-open');
     root.setAttribute('aria-hidden', 'true');
+    root.style.transform = '';
+    panelBackdrop?.remove();
+    updateFab();
 }
 
 export function togglePanel() {
@@ -625,6 +675,7 @@ export function initPanel(context) {
     root.setAttribute('aria-hidden', 'true');
     root.innerHTML = `
         <header class="avm-head">
+            <div class="avm-grabber" aria-hidden="true"></div>
             <div class="avm-brand">
                 <span class="avm-logo"><i class="fa-solid fa-vault"></i></span>
                 <div><div class="avm-brand-name">API 管理器</div><div class="avm-brand-sub">点框 · 选配置 · 自动填</div></div>
@@ -653,7 +704,15 @@ export function initPanel(context) {
         }
     });
 
+    // Phones: drag the header down to close, and keep the sheet above the on-screen keyboard.
+    swipeToClose(root.querySelector('.avm-head'), root, () => closePanel());
+    trackKeyboard();
+
     // The editor holds unsaved input, so only the other views follow live changes.
-    store.onChange(() => view !== 'edit' && render());
+    store.onChange(() => {
+        updateFab();
+        if (view !== 'edit') render();
+    });
     onTargetChange(() => view === 'list' && render());
+    updateFab();
 }

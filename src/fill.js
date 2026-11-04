@@ -3,6 +3,8 @@
 import { store } from './store.js';
 import { KIND, classifyElement, findPartner, findModelField, fingerprint, scopeTitle, fieldLabel, setFieldValue, defaultVisible } from './detect.js';
 import { resolveKey } from './sync.js';
+// Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
+import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByKey, guessName } from './vault.js';
 
 const TITLE = 'API 管理器';
@@ -18,6 +20,10 @@ let pop = null;
 let popIndex = 0;
 let filling = false;
 let frame = 0;
+let backdrop = null;
+// Time of the last press on the pill. On touch screens the tap can blur the field before `click`
+// arrives, and the pill must survive that blur.
+let pressAt = 0;
 let openPanel = () => {};
 const listeners = new Set();
 const prompted = new Set();
@@ -190,10 +196,13 @@ function ensurePill() {
     pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'avm-root avm-pill';
-    pill.title = 'API 管理器 · Alt+K';
+    pill.title = isTouch() ? 'API 管理器' : 'API 管理器 · Alt+K';
     pill.setAttribute('aria-label', '从 API 管理器选择');
     // Keep focus in the field so the target does not change.
     pill.addEventListener('mousedown', e => e.preventDefault());
+    pill.addEventListener('pointerdown', () => {
+        pressAt = Date.now();
+    });
     pill.addEventListener('click', () => togglePop());
     return pill;
 }
@@ -243,7 +252,11 @@ function ensurePop() {
     pop.setAttribute('aria-label', '选择 API 配置');
     pop.innerHTML = `
         <div class="avm-pop-head">
-            <div class="avm-pop-title"></div>
+            <div class="avm-grabber" aria-hidden="true"></div>
+            <div class="avm-pop-titlebar">
+                <div class="avm-pop-title"></div>
+                <button type="button" class="avm-icon-btn avm-sheet-only" data-act="close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>
+            </div>
             <label class="avm-search">
                 <i class="fa-solid fa-magnifying-glass"></i>
                 <input type="text" placeholder="搜索名称、地址、标签" autocomplete="off" spellcheck="false" aria-label="搜索配置">
@@ -271,11 +284,14 @@ function ensurePop() {
             const el = target?.el;
             closePop(true);
             captureFrom(el);
+        } else if (act === 'close') {
+            closePop(true);
         } else if (act === 'panel') {
             closePop(false);
             openPanel();
         }
     });
+    swipeToClose(pop.querySelector('.avm-pop-head'), pop, () => closePop(false));
     return pop;
 }
 
@@ -320,6 +336,8 @@ function renderPopList() {
 function placePop() {
     const t = currentTarget();
     if (!t) return closePop(false);
+    // The bottom sheet is placed by CSS.
+    if (pop.classList.contains('is-sheet')) return;
     const rect = t.el.getBoundingClientRect();
     const width = Math.min(340, innerWidth - 16);
     pop.style.width = `${width}px`;
@@ -334,21 +352,39 @@ function openPop() {
     const t = currentTarget();
     if (!t) return;
     ensurePop();
+    const sheet = isCompact();
+    pop.classList.toggle('is-sheet', sheet);
+    pop.removeAttribute('style');
+    if (sheet) {
+        if (!backdrop) {
+            backdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop' });
+            // Close on click, not on pointerdown, so the tap does not land on the page underneath.
+            backdrop.addEventListener('click', () => closePop(false));
+        }
+        mount(backdrop, t.el);
+    }
     mount(pop, t.el);
     popIndex = 0;
     const input = pop.querySelector('input');
     input.value = '';
     renderPopList();
     placePop();
-    input.focus({ preventScroll: true });
+    if (sheet) {
+        // Drop the keyboard so the whole list is visible; the field stays the fill target.
+        // Searching is one tap away in the sheet.
+        t.el.blur();
+    } else {
+        input.focus({ preventScroll: true });
+    }
     updatePill();
 }
 
 function closePop(refocus = false) {
     if (!pop?.isConnected) return;
     pop.remove();
+    backdrop?.remove();
     pill?.classList.remove('is-open');
-    if (refocus && target?.el.isConnected) target.el.focus({ preventScroll: true });
+    if (refocus && !isCompact() && target?.el.isConnected) target.el.focus({ preventScroll: true });
 }
 
 function togglePop() {
@@ -362,7 +398,7 @@ async function pick(id) {
     closePop(false);
     if (p && el) {
         await fillProfile(p, el);
-        el.focus({ preventScroll: true });
+        if (!isCompact()) el.focus({ preventScroll: true });
     }
 }
 
@@ -405,6 +441,7 @@ function onFocusOut() {
     setTimeout(() => {
         const a = document.activeElement;
         if (a === target?.el || a?.closest?.('.avm-root')) return;
+        if (Date.now() - pressAt < 800 || pop?.isConnected) return;
         hidePill();
     }, 0);
 }
@@ -436,7 +473,7 @@ function onChange(e) {
 
 function onPointerDown(e) {
     if (!pop?.isConnected) return;
-    if (e.target.closest?.('.avm-pop, .avm-pill') || e.target === target?.el) return;
+    if (e.target.closest?.('.avm-pop, .avm-pill, .avm-backdrop') || e.target === target?.el) return;
     closePop(false);
 }
 
@@ -457,6 +494,9 @@ export function initFill(opts = {}) {
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('scroll', schedule, true);
     window.addEventListener('resize', schedule);
+    // Phones: the on-screen keyboard moves the visual viewport without a window resize.
+    window.visualViewport?.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('scroll', schedule);
     store.onChange(() => {
         if (pillShown) updatePill();
         if (pop?.isConnected) renderPopList();

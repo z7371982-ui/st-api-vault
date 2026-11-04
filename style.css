@@ -1050,18 +1050,127 @@
     line-height: 1.5;
 }
 
-/* ---------- mobile ---------- */
+/* ---------- floating button, drag handle, backdrop ---------- */
+
+.avm-fab {
+    position: fixed;
+    z-index: 9989;
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--avm-accent) 50%, transparent);
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--avm-accent), color-mix(in srgb, var(--avm-accent) 55%, #c86bff));
+    color: #fff;
+    font-size: 18px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    opacity: 0.88;
+    cursor: pointer;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: left 0.2s ease, top 0.2s ease, opacity 0.15s, transform 0.15s;
+}
+
+.avm-fab[hidden] {
+    display: none;
+}
+
+.avm-fab:active,
+.avm-fab.is-dragging {
+    opacity: 1;
+    transform: scale(1.08);
+    transition: opacity 0.15s, transform 0.15s;
+}
+
+.avm-grabber {
+    display: none;
+}
+
+.avm-sheet-only {
+    display: none;
+}
+
+.avm-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9988;
+    background: rgba(0, 0, 0, 0.45);
+    animation: avm-fade 0.2s ease-out;
+}
+
+/* The picker's backdrop sits right under the picker, above the panel. */
+.avm-backdrop:not(.avm-panel-backdrop) {
+    z-index: 99997;
+}
+
+@keyframes avm-fade {
+    from { opacity: 0; }
+}
+
+/* ---------- mobile: bottom sheets ---------- */
 
 @media (max-width: 768px) {
     .avm-panel {
         top: auto;
-        bottom: 0;
+        bottom: var(--avm-kb, 0px);
         width: 100vw;
-        height: 88dvh;
+        height: auto;
+        max-height: calc(88dvh - var(--avm-kb, 0px));
+        min-height: min(55dvh, calc(100dvh - var(--avm-kb, 0px) - 24px));
         border-left: 0;
         border-top: 1px solid var(--avm-line);
-        border-radius: 18px 18px 0 0;
+        border-radius: 20px 20px 0 0;
+        padding-bottom: env(safe-area-inset-bottom);
         transform: translateY(105%);
+    }
+
+    .avm-head {
+        position: relative;
+        padding-top: 20px;
+        touch-action: none;
+    }
+
+    .avm-grabber {
+        display: block;
+        position: absolute;
+        top: 7px;
+        left: 50%;
+        width: 40px;
+        height: 4px;
+        margin-left: -20px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--avm-fg) 30%, transparent);
+    }
+
+    .avm-brand-sub {
+        display: none;
+    }
+
+    /* Finger-sized targets. */
+    .avm-icon-btn {
+        width: 40px;
+        height: 40px;
+    }
+
+    .avm-btn {
+        min-height: 40px;
+    }
+
+    .avm-card-actions {
+        flex-wrap: wrap;
+    }
+
+    .avm-card-actions .avm-btn.is-primary {
+        flex: 1;
+    }
+
+    /* 16px stops iOS from zooming into focused inputs. */
+    .avm-root input,
+    .avm-root textarea,
+    .avm-root select {
+        font-size: 16px !important;
     }
 
     .avm-hide-sm {
@@ -1075,6 +1184,73 @@
     .avm-field-copy {
         opacity: 1;
     }
+
+    .avm-pill {
+        height: 32px;
+        padding: 0 11px;
+        font-size: 13px;
+    }
+
+    /* Quick picker as a bottom sheet instead of a dropdown. */
+    .avm-pop.is-sheet {
+        left: 0 !important;
+        right: 0;
+        top: auto !important;
+        bottom: var(--avm-kb, 0px);
+        width: 100vw !important;
+        max-height: calc(70dvh - var(--avm-kb, 0px));
+        border-radius: 20px 20px 0 0;
+        border-bottom: 0;
+        padding-bottom: env(safe-area-inset-bottom);
+        animation: avm-sheet-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.2s ease;
+    }
+
+    .avm-pop.is-sheet .avm-pop-head {
+        position: relative;
+        padding-top: 20px;
+        touch-action: none;
+    }
+
+    .avm-pop.is-sheet .avm-grabber {
+        display: block;
+        position: absolute;
+        top: 7px;
+        left: 50%;
+        width: 40px;
+        height: 4px;
+        margin-left: -20px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--avm-fg) 30%, transparent);
+    }
+
+    .avm-pop.is-sheet .avm-sheet-only {
+        display: inline-grid;
+    }
+
+    .avm-pop.is-sheet .avm-row {
+        padding: 11px 10px;
+    }
+
+    .avm-pop.is-sheet .avm-pop-foot button {
+        padding: 14px 6px;
+        font-size: 0.88em;
+    }
+}
+
+.avm-pop-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.avm-pop-titlebar .avm-pop-title {
+    flex: 1;
+}
+
+@keyframes avm-sheet-in {
+    from { transform: translateY(100%); }
+    to { transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

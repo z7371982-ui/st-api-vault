@@ -1,19 +1,39 @@
 // Scans other extensions' saved settings for URL + key pairs they already store,
 // and reads / writes those locations so vault edits can flow back into the extensions.
-import { classifyDescriptor, KIND } from './detect.js';
-import { MODULE, guessName, hashKey } from './vault.js';
+import { classifyDescriptor, KIND, tokenize } from './detect.js';
+import { MODULE, guessName, hashKey, normalizeUrl } from './vault.js';
 
 const isPlain = v => v && typeof v === 'object' && !Array.isArray(v);
 const looksUrl = v => /^https?:\/\/\S+$/i.test(v.trim());
 const looksKey = v => v.trim().length >= 8 && !/\s/.test(v.trim()) && !looksUrl(v);
 
+// Props that hold a human name for a channel / API entry, e.g. { name: '主力中转', url, key }.
+const NAME_TOKENS = new Set(['name', 'label', 'title', 'alias', 'remark', 'remarks', 'nickname', 'nick', 'note', 'display']);
+const NOT_NAME_TOKENS = new Set(['model', 'prompt', 'template', 'file', 'user', 'char', 'character', 'avatar', 'preset', 'voice', 'key', 'url']);
+const EXACT_NAME = /^(name|label|title|alias|remark|displayName|display_name|channelName|channel_name|nickname)$/i;
+
+/** Best name prop in one settings object, preferring exact ones like "name" over "xxx_label". */
+export function pickNameProp(node) {
+    const hits = [];
+    for (const [prop, value] of Object.entries(node)) {
+        if (typeof value !== 'string') continue;
+        const v = value.trim();
+        if (!v || v.length > 60 || looksUrl(v) || /^(sk|ak|pk)-/i.test(v)) continue;
+        const tokens = tokenize(prop);
+        if (!tokens.some(t => NAME_TOKENS.has(t)) || tokens.some(t => NOT_NAME_TOKENS.has(t))) continue;
+        hits.push({ prop, value: v, exact: EXACT_NAME.test(prop) });
+    }
+    hits.sort((a, b) => b.exact - a.exact);
+    return hits[0] || null;
+}
+
 /**
  * @param {object} settings SillyTavern extension_settings
- * @returns {{source:string, url:string, key:string, name:string,
- *   refs:{segs:string[], keyProp:string, urlProp:string, source:string, hash:string}[]}[]}
- *   One entry per distinct key; `refs` lists every place that key is stored.
+ * @returns {{source:string, url:string, key:string, name:string, label:string,
+ *   refs:{segs:string[], keyProp:string, urlProp:string, nameProp:string, nameSeen:string, source:string, hash:string}[]}[]}
+ *   One entry per distinct key + address; `refs` lists every place that pair is stored.
  */
-export function scanExtensionSettings(settings, { maxDepth = 5 } = {}) {
+export function scanExtensionSettings(settings, { maxDepth = 6 } = {}) {
     const out = [];
     const seen = new WeakSet();
 
@@ -35,10 +55,19 @@ export function scanExtensionSettings(settings, { maxDepth = 5 } = {}) {
                 visit(value, [...segs, prop], depth + 1);
             }
         }
+        if (!keys.length) return;
         const source = segs[0];
+        const named = pickNameProp(node);
         for (const k of keys) {
             const url = urls[0]?.value || '';
-            out.push({ source, url, key: k.value, name: guessName(url, source), ref: { segs, keyProp: k.prop, urlProp: urls[0]?.prop || '' } });
+            out.push({
+                source,
+                url,
+                key: k.value,
+                label: named?.value || '',
+                name: named?.value || guessName(url, source),
+                ref: { segs, keyProp: k.prop, urlProp: urls[0]?.prop || '', nameProp: named?.prop || '', nameSeen: named?.value || '' },
+            });
         }
     };
 
@@ -54,17 +83,28 @@ export function scanExtensionSettings(settings, { maxDepth = 5 } = {}) {
                 source: 'Extras',
                 url: typeof apiUrl === 'string' ? apiUrl : '',
                 key: apiKey.trim(),
+                label: '',
                 name: 'Extras API',
-                ref: { segs: [], keyProp: 'apiKey', urlProp: 'apiUrl' },
+                ref: { segs: [], keyProp: 'apiKey', urlProp: 'apiUrl', nameProp: '', nameSeen: '' },
             });
         }
     }
 
+    // The same key on two different relays is two configs; only the exact same pair is merged.
+    // A copy of the key stored without any address joins the first entry that has that key.
     const unique = new Map();
-    for (const { ref, ...c } of out) {
-        const entry = unique.get(c.key) || { ...c, refs: [] };
+    const add = (id, c, ref) => {
+        const entry = unique.get(id) || { ...c, refs: [] };
+        if (!entry.label && c.label) Object.assign(entry, { label: c.label, name: c.name });
         entry.refs.push({ ...ref, source: c.source, hash: hashKey(c.key) });
-        unique.set(c.key, entry);
+        unique.set(id, entry);
+    };
+    const pairId = c => `${c.key}\n${normalizeUrl(c.url).toLowerCase()}`;
+    for (const { ref, ...c } of out) if (c.url) add(pairId(c), c, ref);
+    for (const { ref, ...c } of out) {
+        if (c.url) continue;
+        const withUrl = [...unique.keys()].find(id => id.startsWith(`${c.key}\n`));
+        add(withUrl || pairId(c), c, ref);
     }
     return [...unique.values()];
 }

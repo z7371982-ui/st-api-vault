@@ -16,6 +16,9 @@ export function defaultSettings() {
             capture: true,
             autoImport: true,
             autoSync: true,
+            // Floating key button: on by default on touch screens, where there is no Alt+K.
+            fab: 'auto',
+            fabPos: null,
         },
     };
 }
@@ -55,6 +58,11 @@ export function createProfile(p = {}) {
         // last label seen on the ST secret, so a rename in ST can be told apart from a rename here
         stLabel: str(p.stLabel),
         stMissing: !!p.stMissing,
+        // ST reverse proxy preset this profile mirrors; hash of url+password tells a rename in ST from a delete
+        proxyRef: p.proxyRef && typeof p.proxyRef.name === 'string' ? { name: p.proxyRef.name, hash: str(p.proxyRef.hash) } : null,
+        proxyMissing: !!p.proxyMissing,
+        // name was derived (host / extension id), so a real name found later may replace it
+        nameAuto: p.nameAuto === undefined ? looksDerivedName(p) : !!p.nameAuto,
         syncTarget: str(p.syncTarget),
         syncedHash: str(p.syncedHash),
         // places in other extensions' settings that hold this key
@@ -69,6 +77,14 @@ export function createProfile(p = {}) {
     };
 }
 
+/** Older profiles have no nameAuto flag; treat host names and source tags as derived. */
+function looksDerivedName(p) {
+    const name = str(p.name);
+    if (!name) return true;
+    if (str(p.url) && name === guessName(p.url)) return true;
+    return Array.isArray(p.tags) && p.tags.some(t => str(t) === name);
+}
+
 function normHealth(h) {
     if (!h || typeof h !== 'object') return null;
     return { ok: !!h.ok, ms: num(h.ms, 0), at: num(h.at, 0), count: num(h.count, 0), error: str(h.error), base: str(h.base) };
@@ -76,7 +92,10 @@ function normHealth(h) {
 
 function normExtRef(r) {
     if (!r || !Array.isArray(r.segs) || !str(r.keyProp)) return null;
-    return { segs: r.segs.map(String), keyProp: str(r.keyProp), urlProp: str(r.urlProp), source: str(r.source), hash: str(r.hash) };
+    return {
+        segs: r.segs.map(String), keyProp: str(r.keyProp), urlProp: str(r.urlProp), source: str(r.source), hash: str(r.hash),
+        nameProp: str(r.nameProp), nameSeen: str(r.nameSeen),
+    };
 }
 
 /** Stable id of an extension settings location, e.g. "translate.nested.apiKey". */
@@ -141,6 +160,18 @@ export function parseTags(text) {
 export function findProfileByKey(profiles, key) {
     const k = str(key);
     return k ? profiles.find(p => p.key === k) || null : null;
+}
+
+/** Same key at the same address. One key used on two different relays stays two profiles. */
+export function findProfileByPair(profiles, key, url) {
+    const k = str(key);
+    if (!k) return null;
+    return profiles.find(p => p.key === k && (!p.url || !str(url) || sameUrl(p.url, url))) || null;
+}
+
+/** Hash of a proxy preset's contents, to recognise it after a rename in ST. */
+export function proxyHash(url, password) {
+    return hashKey(`${str(url)}\n${str(password)}`);
 }
 
 /** Same key means duplicate. Without a key, the same URL (with no key either) is a duplicate. */

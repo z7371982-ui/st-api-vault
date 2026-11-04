@@ -1,6 +1,7 @@
 // API 管理器 · API Vault — entry point.
 import { store } from './src/store.js';
 import { st } from './src/st.js';
+import { proxy } from './src/proxy.js';
 import { initSync, autoImport, scheduleImport, scheduleReconcile } from './src/sync.js';
 import { initProbe } from './src/probe.js';
 import { initFill } from './src/fill.js';
@@ -60,6 +61,7 @@ async function init() {
     const ctx = SillyTavern.getContext();
     store.init(ctx);
     st.init(ctx);
+    proxy.init(ctx);
     initSync(ctx);
     initProbe(ctx);
     initPanel(ctx);
