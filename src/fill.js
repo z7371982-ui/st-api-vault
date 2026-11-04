@@ -253,9 +253,15 @@ function updatePill() {
     placeFixed(node, left, top);
 }
 
+let settleTimers = [];
+
 function showPill() {
     pillShown = true;
     updatePill();
+    // Plugin popups often animate in (scale / slide). Re-place a few times while that settles,
+    // instead of waiting for the next scroll or resize to correct the position.
+    settleTimers.forEach(clearTimeout);
+    settleTimers = [80, 200, 400].map(ms => setTimeout(() => pillShown && updatePill(), ms));
 }
 
 function hidePill() {
@@ -442,16 +448,29 @@ function onPopKey(e) {
 
 // ---------- page listeners ----------
 
-// `change` is not a composed event, so it never leaves a shadow root; listen on each root we see.
+// Shadow roots need their own listeners:
+//   - `change` is not composed, so it never leaves the shadow root.
+//   - focus moving between two inputs of the same shadow root retargets to host -> host, and the browser
+//     does not deliver that to `document` at all. Without these, the key button only showed up once focus
+//     came from outside the plugin's window.
+// Roots are picked up on the first pointerdown / focus inside them, which do reach `document`.
 const watchedRoots = new WeakSet();
 function watchShadowRoot(el) {
-    const root = shadowRootOf(el);
-    if (!root || watchedRoots.has(root)) return;
-    watchedRoots.add(root);
-    root.addEventListener('change', onChange, true);
+    for (let root = shadowRootOf(el); root; root = shadowRootOf(root.host)) {
+        if (watchedRoots.has(root)) continue;
+        watchedRoots.add(root);
+        root.addEventListener('change', onChange, true);
+        root.addEventListener('focusin', onFocusIn, true);
+        root.addEventListener('focusout', onFocusOut, true);
+    }
 }
 
+// The same event can reach both a shadow root listener and the document listener; handle it once.
+const seenEvents = new WeakSet();
+const firstTime = e => !seenEvents.has(e) && !!seenEvents.add(e);
+
 function onFocusIn(e) {
+    if (!firstTime(e)) return;
     // Inside a shadow root e.target is only the host; the real input is first in the composed path.
     const el = eventTarget(e);
     if (!(el instanceof Element) || el.closest('.avm-root')) return;
@@ -470,7 +489,8 @@ function onFocusIn(e) {
     maybeAutoFill(el).catch(err => console.warn('[API Vault] auto-fill failed', err));
 }
 
-function onFocusOut() {
+function onFocusOut(e) {
+    if (e && !firstTime(e)) return;
     setTimeout(() => {
         const a = deepActiveElement();
         if (a === target?.el || a?.closest?.('.avm-root')) return;
@@ -488,7 +508,7 @@ async function maybeAutoFill(el) {
 
 /** Offers to save a key the user typed or pasted by hand somewhere. */
 function onChange(e) {
-    if (filling || !store.options.capture) return;
+    if (!firstTime(e) || filling || !store.options.capture) return;
     const el = eventTarget(e);
     if (!(el instanceof Element) || el.closest('.avm-root')) return;
     const kind = classifyElement(el);
@@ -505,8 +525,10 @@ function onChange(e) {
 }
 
 function onPointerDown(e) {
-    if (!pop?.isConnected) return;
     const t = eventTarget(e);
+    // Start watching a plugin's shadow root before its input even gets focus.
+    if (t instanceof Element) watchShadowRoot(t);
+    if (!pop?.isConnected) return;
     if (t.closest?.('.avm-pop, .avm-pill, .avm-backdrop') || t === target?.el) return;
     closePop(false);
 }
