@@ -953,7 +953,7 @@
     line-height: 1;
     cursor: pointer;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-    animation: avm-pop-in 0.16s ease-out;
+    /* No CSS entry animation: it replays whenever the node is re-inserted. fill.js animates it once on appear. */
 }
 
 /* Icon only: a true circle. ST's global button / icon styles must not shift the glyph. */

@@ -172,21 +172,32 @@ function mount(node, el) {
     if (node.parentNode !== host) host.append(node);
 }
 
-function placeFixed(node, left, top) {
-    node.style.left = `${left}px`;
-    node.style.top = `${top}px`;
-    // A transformed ancestor (some popups animate with transform) offsets fixed elements; undo the measured shift.
-    // Measure with our own entry animation off: its first frame (translateY(-4px) scale(.98)) would be
-    // mistaken for such a shift and leave the node a few pixels too low once the animation ends.
-    node.style.animation = 'none';
-    const r = node.getBoundingClientRect();
-    node.style.animation = '';
-    const dx = r.left - left;
-    const dy = r.top - top;
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-        node.style.left = `${left - dx}px`;
-        node.style.top = `${top - dy}px`;
+let originProbe = null;
+
+/**
+ * Where (0, 0) of a fixed element inside `host` really lands. A transformed ancestor (some popups
+ * animate with transform) moves it. Measured with a separate invisible probe, so the node itself is
+ * never touched: resetting its `animation` to measure it restarted the entry animation on every
+ * re-placement, which showed up as the button flashing several times.
+ */
+function fixedOrigin(host) {
+    if (!originProbe) {
+        originProbe = document.createElement('div');
+        originProbe.className = 'avm-root';
+        originProbe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;animation:none;transition:none';
     }
+    host.append(originProbe);
+    const r = originProbe.getBoundingClientRect();
+    originProbe.remove();
+    return r;
+}
+
+function placeFixed(node, left, top) {
+    const o = fixedOrigin(node.parentNode || document.body);
+    const x = `${Math.round(left - o.left)}px`;
+    const y = `${Math.round(top - o.top)}px`;
+    if (node.style.left !== x) node.style.left = x;
+    if (node.style.top !== y) node.style.top = y;
 }
 
 function schedule() {
@@ -233,14 +244,20 @@ function updatePill() {
     }
     const rect = anchorEl().getBoundingClientRect();
     if (rect.bottom < 0 || rect.top > innerHeight || rect.width < 40) {
-        pill?.remove();
+        // Hide in place rather than remove: while a plugin popup animates in, the field is briefly
+        // tiny or off screen, and removing + re-adding replayed the entry animation (visible flashing).
+        if (pill) pill.style.visibility = 'hidden';
         return;
     }
     const node = ensurePill();
+    const fresh = !node.isConnected;
+    if (node.style.visibility) node.style.visibility = '';
     const bound = t.binding && store.get(t.binding.profileId);
     node.classList.toggle('is-bound', !!bound);
     node.classList.toggle('is-open', !!pop?.isConnected);
-    node.innerHTML = `<i class="fa-solid fa-key"></i>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
+    // Only rewrite when it changed; re-placing runs several times while a popup settles.
+    const html = `<i class="fa-solid fa-key"></i>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
+    if (node.innerHTML !== html) node.innerHTML = html;
     mount(node, t.el);
     const w = node.offsetWidth;
     const h = node.offsetHeight;
@@ -251,6 +268,10 @@ function updatePill() {
     const band = anchor.tagName === 'TEXTAREA' ? Math.min(rect.height, 44) : rect.height;
     const top = rect.top + (band - h) / 2;
     placeFixed(node, left, top);
+    // Entry animation only when the button actually appears, never on a re-placement.
+    if (fresh && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        node.animate?.([{ opacity: 0, transform: 'scale(0.85)' }, { opacity: 1, transform: 'none' }], { duration: 140, easing: 'ease-out' });
+    }
 }
 
 let settleTimers = [];
