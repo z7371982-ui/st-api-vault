@@ -948,6 +948,7 @@
 
 .avm-pill {
     position: fixed;
+    inset: auto;
     z-index: 99998;
     display: inline-flex;
     align-items: center;
@@ -981,8 +982,9 @@
     padding: 0;
 }
 
-.avm-pill i {
+.avm-pill .avm-key-icon {
     display: block;
+    flex: none;
     margin: 0;
     line-height: 1;
     color: var(--avm-accent);
@@ -1000,8 +1002,8 @@
     color: #fff;
 }
 
-.avm-pill:hover i,
-.avm-pill.is-open i {
+.avm-pill:hover .avm-key-icon,
+.avm-pill.is-open .avm-key-icon {
     color: #fff;
 }
 
@@ -1009,6 +1011,9 @@
 
 .avm-pop {
     position: fixed;
+    inset: auto;
+    margin: 0;
+    padding: 0;
     z-index: 99999;
     display: flex;
     flex-direction: column;
@@ -1213,6 +1218,11 @@
 
 .avm-backdrop {
     position: fixed;
+    width: auto;
+    height: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
     top: 0;
     right: 0;
     bottom: 0;

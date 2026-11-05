@@ -203,8 +203,8 @@ export function focusTarget() {
 // ---------- positioning ----------
 
 /**
- * The floating plugin window `el` sits in: its nearest position:fixed ancestor. Null when there is none,
- * or when that window would clip our fixed nodes (it is their containing block and hides overflow).
+ * The floating plugin window `el` sits in: its nearest position:fixed ancestor.
+ * Keep ownership even when the window clips descendants; top-layer placement escapes that clipping.
  */
 function floatingWindowOf(el) {
     // Walks up through shadow boundaries too: a Vue / Lit plugin's window usually lives in a shadow root.
@@ -212,17 +212,9 @@ function floatingWindowOf(el) {
     for (let n = up(el); n && n !== document.body && n !== document.documentElement; n = up(n)) {
         const cs = getComputedStyle(n);
         if (cs.position !== 'fixed') continue;
-        return containsFixed(n) && cs.overflow !== 'visible' ? null : n;
+        return n;
     }
     return null;
-}
-
-/** Whether `n` is the containing block of position:fixed descendants (transform, filter, contain, ...). */
-function containsFixed(n) {
-    const cs = getComputedStyle(n);
-    return cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none'
-        || (cs.backdropFilter && cs.backdropFilter !== 'none') || (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none')
-        || /transform|filter|perspective/.test(cs.willChange) || /paint|layout|strict|content/.test(cs.contain);
 }
 
 /**
@@ -256,15 +248,15 @@ function ensureStyles(host) {
     root.append(link);
 }
 
-/**
- * @param {{sheet?: boolean}} [opts] The phone bottom sheet and its backdrop are laid out by CSS against the
- *   screen; inside a transformed window they would be laid out against the window instead, so they stay on body.
- */
-function mount(node, { sheet = false } = {}) {
-    let host = targetHost();
-    if (sheet && host !== document.body && host.tagName !== 'DIALOG' && containsFixed(host)) host = document.body;
+/** Keep events inside the owner while escaping its clipping, without moving input focus. */
+function mount(node) {
+    const host = targetHost();
     ensureStyles(host);
     if (node.parentNode !== host) host.append(node);
+    if (typeof node.showPopover === 'function') {
+        node.setAttribute('popover', 'manual');
+        if (!node.matches(':popover-open')) node.showPopover();
+    }
 }
 
 let originProbe = null;
@@ -288,7 +280,7 @@ function fixedOrigin(host) {
 }
 
 function placeFixed(node, left, top) {
-    const o = fixedOrigin(node.parentNode || document.body);
+    const o = node.hasAttribute('popover') ? { left: 0, top: 0 } : fixedOrigin(node.parentNode || document.body);
     const x = `${Math.round(left - o.left)}px`;
     const y = `${Math.round(top - o.top)}px`;
     if (node.style.left !== x) node.style.left = x;
@@ -343,10 +335,11 @@ function ensurePill() {
 }
 
 /**
- * Field the pill and picker sit next to. A pick fills the URL and key together, so for a pair
- * the button lives on the URL field (the top of the group), whichever of the two was clicked.
+ * On phones follow the focused field, since its partner may have scrolled above the keyboard.
+ * On desktop a pair shares the button on its URL field.
  */
 function anchorEl() {
+    if (isCompact()) return target?.el;
     const a = target?.anchor;
     return a?.isConnected && defaultVisible(a) ? a : target?.el;
 }
@@ -371,7 +364,8 @@ function updatePill() {
     node.classList.toggle('is-bound', !!bound);
     node.classList.toggle('is-open', !!pop?.isConnected);
     // Only rewrite when it changed; re-placing runs several times while a popup settles.
-    const html = `<i class="fa-solid fa-key"></i>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
+    // Inline geometry also works inside shadow roots and when the host's icon font is unavailable.
+    const html = `<svg class="avm-key-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-4-4 3-3m-6 0 3-3"/></svg>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
     if (node.innerHTML !== html) node.innerHTML = html;
     mount(node);
     const w = node.offsetWidth;
@@ -506,11 +500,11 @@ function updatePopLayout() {
             // Close on click, not on pointerdown, so the tap does not land on the page underneath.
             backdrop.addEventListener('click', () => closePop(false));
         }
-        mount(backdrop, { sheet });
+        mount(backdrop);
     } else {
         backdrop?.remove();
     }
-    mount(pop, { sheet });
+    mount(pop);
     return sheet;
 }
 
@@ -539,13 +533,11 @@ function openPop() {
     input.value = '';
     renderPopList();
     placePop();
-    if (sheet) {
-        // Drop the keyboard so the whole list is visible; the field stays the fill target.
-        // Searching is one tap away in the sheet.
-        t.el.blur();
-    } else {
+    if (!sheet) {
         input.focus({ preventScroll: true });
     }
+    // On phones, keep input focus: blur can make the host redraw/close and lose the fill target.
+    // The existing visual-viewport sizing keeps the picker above an open keyboard.
     updatePill();
 }
 
