@@ -115,6 +115,8 @@ function normExtRef(r) {
         segs: r.segs.map(String), keyProp: str(r.keyProp), urlProp: str(r.urlProp), source: str(r.source), hash: str(r.hash),
         urlSeen: typeof r.urlSeen === 'string' ? r.urlSeen : undefined,
         nameProp: str(r.nameProp), nameSeen: str(r.nameSeen),
+        // a note the user gave this place in the bound-fields list
+        alias: str(r.alias).slice(0, 40),
     };
 }
 

@@ -917,7 +917,14 @@
 }
 
 .avm-model-sheet .avm-subhead {
+    flex: none;
     margin: 0;
+}
+
+/* .avm-search grows (flex: 1) in the list toolbar; in this column layout that stretched it to half the sheet. */
+.avm-model-sheet .avm-search {
+    flex: none;
+    height: 40px;
 }
 
 .avm-model-count {

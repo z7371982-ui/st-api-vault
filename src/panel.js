@@ -8,10 +8,10 @@ import { KIND_LABEL, syncBinding, syncProfileFields } from './fill.js';
 import { isCompact, isTouch, swipeToClose, trackViewport, createFab } from './sheet.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
-    parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus,
+    parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus, extRefId,
 } from './vault.js';
 
-const TITLE = 'API 管理器';
+const TITLE = '通用钥匙';
 
 let ctx = null;
 let root = null;
@@ -346,13 +346,13 @@ function settingsView() {
             ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
             <label class="avm-switch-row">
-                <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
+                <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开通用钥匙，按住可以拖到任意位置，松手会贴到边上</small></span>
                 <input type="checkbox" class="avm-switch" data-opt="fab" ${fabEnabled() ? 'checked' : ''}>
             </label>
             <div class="avm-note"><i class="fa-regular fa-keyboard"></i><div>
                 ${isCompact() || isTouch()
-                    ? '<b>手机上</b>：点进插件的地址或密钥框，框边会出现钥匙按钮，点它从底部弹出配置列表；屏幕边上的悬浮钥匙可以拖动，点它打开管理器。<br>'
-                    : '<b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开管理器。<br>'}
+                    ? '<b>手机上</b>：点进插件的地址或密钥框，框边会出现钥匙按钮，点它从底部弹出配置列表；屏幕边上的悬浮钥匙可以拖动，点它打开通用钥匙。<br>'
+                    : '<b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开通用钥匙。<br>'}
                 配置保存在酒馆的扩展设置里（settings.json），和酒馆本身的设置一起备份。
             </div></div>
         </div>`;
@@ -635,21 +635,47 @@ function bindingsBlock(p) {
             : status === 'ok' ? '<span class="avm-badge is-ok" title="和当前配置一致">最新</span>' : '';
         const fps = esc(JSON.stringify(g.items.map(([fp]) => fp)));
         const full = g.items.map(([, b]) => [g.plugin, ...(b.place?.path?.length ? b.place.path : [b.label || KIND_LABEL[b.kind] || ''])].filter(Boolean).join(' › ')).join('\n');
+        // A note the user typed replaces the title; the detected plugin and path move to the second line.
+        const alias = g.items.map(([, b]) => b.alias).find(Boolean) || '';
+        const title = alias || g.plugin;
+        const detail = alias ? [g.plugin, sub].filter(Boolean).join(' · ') : sub;
         return `<li data-fps="${fps}" title="${esc(full)}">
-            <span class="avm-binding-text"><b>${esc(g.plugin)}</b><small>${esc(sub)}</small></span>
+            <span class="avm-binding-text"><b>${esc(title)}</b><small>${esc(detail)}</small></span>
             ${badge}
+            <button type="button" class="avm-icon-btn" data-act="binding-rename" data-fps="${fps}" data-alias="${esc(alias)}" data-default="${esc(g.plugin)}" title="改名 / 备注" aria-label="给这一处改名或写备注"><i class="fa-solid fa-pen"></i></button>
             <button type="button" class="avm-icon-btn" data-act="binding-sync" data-fps="${fps}" title="把当前${esc(what || '地址 / 密钥')}写进这些输入框" aria-label="同步到这些输入框"><i class="fa-solid fa-rotate"></i></button>
             <button type="button" class="avm-icon-btn" data-act="unbind" data-fps="${fps}" title="解除绑定" aria-label="解除绑定"><i class="fa-solid fa-xmark"></i></button>
         </li>`;
     };
-    const rowsHtml = groupBindings(bindings).map(row).join('');
-    const plugins = p.extRefs.length
-        ? `<span class="avm-hint">存在 ${esc([...new Set(p.extRefs.map(r => r.source))].join('、'))} 设置里的副本，保存时会一起改。</span>` : '';
-    return `<div class="avm-label">已绑定的输入框
+    // Plugins that keep the key in their own settings (scripts without a visible field, or filled before)
+    // are listed too: the vault rewrites those settings on save, so they belong in this list.
+    const refRow = r => {
+        const id = extRefId(r);
+        const where = ['插件设置', r.nameSeen].filter(Boolean).join(' · ');
+        return `<li title="${esc(`${r.source} 设置：${id}`)}">
+            <span class="avm-binding-text"><b>${esc(r.alias || r.source)}</b><small>${esc(r.alias ? `${r.source} · ${where}` : where)}</small></span>
+            <span class="avm-badge" title="保存时自动改成新的地址和密钥">自动</span>
+            <button type="button" class="avm-icon-btn" data-act="ref-rename" data-ref="${esc(id)}" title="改名 / 备注" aria-label="给这一处改名或写备注"><i class="fa-solid fa-pen"></i></button>
+            <button type="button" class="avm-icon-btn" data-act="ref-unlink" data-ref="${esc(id)}" title="不再同步到这个插件设置" aria-label="解除关联"><i class="fa-solid fa-xmark"></i></button>
+        </li>`;
+    };
+    const rowsHtml = groupBindings(bindings).map(row).join('') + p.extRefs.map(refRow).join('');
+    if (!rowsHtml) return '';
+    return `<div class="avm-label">已绑定的位置
         <ul class="avm-bindings">${rowsHtml}</ul>
-        <span class="avm-hint">改了密钥后点「保存」：插件设置里的副本立即更新，插件输入框下次点进去时自动换成新的。插件窗口开着时，也可以点 <i class="fa-solid fa-rotate"></i> 马上同步。</span>
-        ${plugins}
+        <span class="avm-hint">改了密钥后点「保存」：插件设置里的副本立即更新，插件输入框下次点进去时自动换成新的。插件窗口开着时，也可以点 <i class="fa-solid fa-rotate"></i> 马上同步。点 <i class="fa-solid fa-pen"></i> 可以给每一处改名、写备注。</span>
     </div>`;
+}
+
+/** Asks for a note / name; returns the trimmed text, '' to reset, or null when cancelled. */
+async function askAlias(current, fallback) {
+    let name = null;
+    try {
+        if (ctx.Popup?.show?.input) name = await ctx.Popup.show.input('改名 / 备注', `留空恢复为：${fallback}`, current || '');
+        else name = window.prompt(`改名 / 备注（留空恢复为：${fallback}）`, current || '');
+    } catch { /* cancelled */ }
+    if (name === null || name === false || name === undefined) return null;
+    return String(name).trim().slice(0, 40);
 }
 
 /** Fingerprints behind one bindings row (URL and key of the same window). */
@@ -802,6 +828,27 @@ async function onClick(e) {
         case 'test': return p && !testing.has(p.id) && runCardTest(p);
         case 'unbind': {
             for (const fp of rowFps(el)) store.unbind(fp);
+            return refreshBindings();
+        }
+        case 'binding-rename': {
+            const alias = await askAlias(el.dataset.alias, el.dataset.default);
+            if (alias === null) return;
+            for (const fp of rowFps(el)) store.updateBinding(fp, { alias });
+            return refreshBindings();
+        }
+        case 'ref-rename':
+        case 'ref-unlink': {
+            const cur = editId && store.get(editId);
+            const ref = cur?.extRefs.find(r => extRefId(r) === el.dataset.ref);
+            if (!ref) return;
+            if (el.dataset.act === 'ref-unlink') {
+                cur.extRefs = cur.extRefs.filter(r => r !== ref);
+            } else {
+                const alias = await askAlias(ref.alias, ref.source);
+                if (alias === null) return;
+                ref.alias = alias;
+            }
+            store.save();
             return refreshBindings();
         }
         case 'binding-sync': {
@@ -990,7 +1037,7 @@ export function initPanel(context) {
             <div class="avm-grabber" aria-hidden="true"></div>
             <div class="avm-brand">
                 <span class="avm-logo"><i class="fa-solid fa-vault"></i></span>
-                <div><div class="avm-brand-name">API 管理器</div><div class="avm-brand-sub">点框 · 选配置 · 自动填</div></div>
+                <div><div class="avm-brand-name">通用钥匙</div><div class="avm-brand-sub">点框 · 选配置 · 自动填</div></div>
             </div>
             <nav class="avm-head-actions">
                 <button type="button" class="avm-icon-btn" data-view-btn="import" title="从酒馆导入" aria-label="从酒馆导入"><i class="fa-solid fa-file-import"></i></button>

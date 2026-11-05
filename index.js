@@ -1,4 +1,4 @@
-// API 管理器 · API Vault — entry point.
+// 通用钥匙 · Universal Key — entry point.
 import { store } from './src/store.js';
 import { st } from './src/st.js';
 import { proxy } from './src/proxy.js';
@@ -14,8 +14,8 @@ function addMenuEntry() {
     item.id = 'avm_menu_entry';
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.tabIndex = 0;
-    item.title = 'API 管理器 · Alt+K';
-    item.innerHTML = '<div class="fa-fw fa-solid fa-vault extensionsMenuExtensionButton"></div><span>API 管理器</span>';
+    item.title = '通用钥匙 · Alt+K';
+    item.innerHTML = '<div class="fa-fw fa-solid fa-vault extensionsMenuExtensionButton"></div><span>通用钥匙</span>';
     item.addEventListener('click', () => openPanel());
     item.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -34,12 +34,12 @@ function addSettingsDrawer() {
     box.innerHTML = `
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>API 管理器</b>
+                <b>通用钥匙</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
                 <p class="avm-drawer-text">集中保存各个 API 的地址和密钥。在任何插件里点进地址或密钥框，旁边会出现一个钥匙按钮，选一个配置就会把地址和密钥一起填好。</p>
-                <div class="menu_button menu_button_icon" data-avm-open><i class="fa-solid fa-vault"></i><span>打开管理器</span></div>
+                <div class="menu_button menu_button_icon" data-avm-open><i class="fa-solid fa-vault"></i><span>打开通用钥匙</span></div>
             </div>
         </div>`;
     box.querySelector('[data-avm-open]').addEventListener('click', () => openPanel());
@@ -51,7 +51,7 @@ function registerSlashCommand(ctx) {
         ctx.registerSlashCommand?.('apivault', () => {
             togglePanel();
             return '';
-        }, ['apimgr'], '– 打开 / 关闭 API 管理器', true, true);
+        }, ['apimgr'], '– 打开 / 关闭通用钥匙', true, true);
     } catch (err) {
         console.warn('[API Vault] slash command not registered', err);
     }

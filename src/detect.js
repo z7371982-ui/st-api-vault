@@ -219,25 +219,45 @@ function findNearby(el, predicate, { isVisible = defaultVisible, maxDepth = 5 } 
     return null;
 }
 
-/** Stable identity for a field across page reloads, used as the binding key. */
+/** A shadow host with no stable id is named by its tag and first class; plugin hosts are usually one of a kind. */
+function hostName(host) {
+    const cls = String(host.getAttribute?.('class') || '').split(/\s+/).find(c => c && !RANDOMISH_ID.test(c));
+    return `<${host.tagName.toLowerCase()}${cls ? `.${cls}` : ''}>`;
+}
+
+/**
+ * Stable identity for a field across page reloads, used as the binding key.
+ * "v2" keys come from a unique id or name / placeholder. Fields without those (many Vue / script plugins:
+ * no name, no placeholder, repeated markup) used to get no key at all, so filling them recorded nothing.
+ * They now get a "v3" key from their label and their position among look-alikes in the same container.
+ */
 export function fingerprint(el) {
     // Fields inside a shadow root are prefixed with their host, e.g. "#bbi-app-host>>shadow input[API 密钥]".
     const shadow = shadowRootOf(el);
-    const hostId = shadow && fingerprint(shadow.host);
-    if (shadow && !hostId) return null;
+    const hostId = shadow && (fingerprint(shadow.host) || hostName(shadow.host));
     const prefix = shadow ? `${hostId}>>` : '';
     const tree = shadow || el.ownerDocument;
     const uniqueId = node => [...tree.querySelectorAll('[id]')].filter(n => n.id === node.id).length === 1;
-    if (el.id && !RANDOMISH_ID.test(el.id)) return uniqueId(el) ? `${prefix}#${el.id}` : null;
+    const stableId = !!el.id && !RANDOMISH_ID.test(el.id);
+    if (stableId && uniqueId(el)) return `${prefix}#${el.id}`;
     let scope = el.parentElement;
     while (scope && (!scope.id || RANDOMISH_ID.test(scope.id))) scope = scope.parentElement;
+    if (scope && !uniqueId(scope)) scope = null;
     const root = scope || shadow || el.ownerDocument.body;
+    const where = scope ? `#${scope.id}` : shadow ? 'shadow' : 'body';
+    const tag = el.tagName.toLowerCase();
     const signature = node => node.getAttribute('name') || node.getAttribute('placeholder');
     const sig = signature(el);
-    if (!sig || (scope && !uniqueId(scope))) return null;
-    if ([...root.querySelectorAll(el.tagName)].filter(n => signature(n) === sig).length !== 1) return null;
-    // Retire old name/placeholder and positional bindings, which could have been ambiguous.
-    return `v2:${prefix}${scope ? `#${scope.id}` : shadow ? 'shadow' : 'body'} ${el.tagName.toLowerCase()}[${sig}]`;
+    // Kept as before, so existing bindings still match.
+    if (sig && !stableId && [...root.querySelectorAll(el.tagName)].filter(n => signature(n) === sig).length === 1) {
+        return `v2:${prefix}${where} ${tag}[${sig}]`;
+    }
+    if (!isFieldElement(el)) return null;
+    const loose = node => signature(node) || node.getAttribute('aria-label') || fieldLabel(node) || node.getAttribute('type') || 'text';
+    const looseSig = loose(el);
+    const same = [...root.querySelectorAll(el.tagName)].filter(n => !n.closest('.avm-root') && loose(n) === looseSig);
+    const idx = same.indexOf(el);
+    return `v3:${prefix}${where} ${tag}[${looseSig}]${same.length > 1 && idx >= 0 ? `:${idx}` : ''}`;
 }
 
 /** Name of the extension / popup that owns the field, e.g. the drawer header text. */

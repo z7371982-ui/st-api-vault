@@ -10,7 +10,7 @@ import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey } from './vault.js';
 
-const TITLE = 'API 管理器';
+const TITLE = '通用钥匙';
 // ST's own key inputs offer saved secret ids (UUIDs) in a datalist; those are not keys.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // ST's own reverse proxy URL / password inputs. They mirror the selected proxy preset.
@@ -470,8 +470,8 @@ function ensurePill() {
     pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'avm-root avm-pill';
-    pill.title = isTouch() ? 'API 管理器' : 'API 管理器 · Alt+K';
-    pill.setAttribute('aria-label', '从 API 管理器选择');
+    pill.title = isTouch() ? '通用钥匙' : '通用钥匙 · Alt+K';
+    pill.setAttribute('aria-label', '从通用钥匙选择');
     // Keep focus in the field so the target does not change.
     pill.addEventListener('mousedown', e => e.preventDefault());
     pill.addEventListener('pointerdown', () => {
@@ -588,7 +588,7 @@ function ensurePop() {
         <div class="avm-pop-list" role="listbox"></div>
         <div class="avm-pop-foot">
             <button type="button" data-act="capture"><i class="fa-solid fa-floppy-disk"></i>保存当前填写</button>
-            <button type="button" data-act="panel"><i class="fa-solid fa-table-cells-large"></i>打开管理器</button>
+            <button type="button" data-act="panel"><i class="fa-solid fa-table-cells-large"></i>打开通用钥匙</button>
         </div>`;
     const input = pop.querySelector('input');
     input.addEventListener('input', () => {
@@ -801,6 +801,12 @@ function onFocusIn(e) {
     rememberField(el);
     showPill();
     emit();
+    // A script that restored a saved key into this field: record where it is used.
+    try {
+        autoBind(el, kind);
+    } catch (err) {
+        console.warn('[API Vault] auto-binding failed', err);
+    }
     const refresh = store.options.autoSync ? refreshStale(el, kind) : Promise.resolve();
     refresh
         .catch(err => console.warn('[API Vault] refreshing bound field failed', err))
@@ -825,13 +831,40 @@ async function maybeAutoFill(el) {
     if (p) await fillProfile(p, el, { quiet: true, keepFilled: true });
 }
 
+/**
+ * A field that holds a saved profile's key without having been filled through the key button (pasted by
+ * hand, or restored by a script from its own settings) is bound too, so it shows up under 已绑定的输入框.
+ * Returns true when it matched a profile.
+ */
+function autoBind(el, kind) {
+    const { key, url, partner } = readPair(el, kind);
+    if (key.length < 8 || UUID.test(key)) return false;
+    const p = findProfileByPair(store.profiles, key, url);
+    if (!p) return false;
+    const pairs = [[el, kind]];
+    if (partner) pairs.push([partner, other(kind)]);
+    const fresh = pairs
+        .filter(([f]) => {
+            const fp = fingerprint(f);
+            return fp && store.binding(fp)?.profileId !== p.id;
+        })
+        .map(([f, k]) => bindingEntry(f, k, p.id))
+        .filter(Boolean);
+    if (fresh.length) {
+        store.bindMany(fresh);
+        linkSoon(p.id);
+    }
+    return true;
+}
+
 /** Offers to save a key the user typed or pasted by hand somewhere. */
 function onChange(e) {
-    if (!firstTime(e) || filling || !store.options.capture) return;
+    if (!firstTime(e) || filling) return;
     const el = eventTarget(e);
     if (!(el instanceof Element) || el.closest('.avm-root')) return;
     const kind = classifyElement(el);
     if (!kind) return;
+    if (autoBind(el, kind) || !store.options.capture) return;
     const { key, url } = readPair(el, kind);
     const pair = JSON.stringify([key, url]);
     if (key.length < 8 || UUID.test(key) || /\s/.test(key) || prompted.has(pair) || findProfileByPair(store.profiles, key, url)) return;

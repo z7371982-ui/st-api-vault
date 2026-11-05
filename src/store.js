@@ -118,6 +118,8 @@ export const store = {
             // A refill that could not tell which plugin it is in keeps the place recorded before.
             const prev = this.settings.bindings[fp];
             const keep = prev?.place?.plugin && !data.place?.plugin ? { place: prev.place } : {};
+            // A note the user gave this field survives refilling it from the same profile.
+            if (prev?.alias && prev.profileId === data.profileId) keep.alias = prev.alias;
             this.settings.bindings[fp] = { ...data, ...keep, at };
         }
         this.save();

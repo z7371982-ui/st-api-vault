@@ -77,7 +77,8 @@ function matchExisting(candidate, raw) {
 
 function mergeExtRefs(current, incoming) {
     const map = new Map(current.map(r => [extRefId(r), r]));
-    for (const r of incoming) map.set(extRefId(r), r);
+    // A note the user gave a place is kept when a later scan finds it again.
+    for (const r of incoming) map.set(extRefId(r), { ...r, alias: map.get(extRefId(r))?.alias || r.alias || '' });
     return [...map.values()];
 }
 
@@ -287,7 +288,7 @@ export async function autoImport({ silent = false } = {}) {
     if (!fresh.length) return;
     const { added } = importItems(fresh);
     if (added && !silent) {
-        toastr.info(`已从酒馆读取 ${added} 个 API 配置`, 'API 管理器', { timeOut: 2500 });
+        toastr.info(`已从酒馆读取 ${added} 个 API 配置`, '通用钥匙', { timeOut: 2500 });
     }
 }
 
@@ -444,6 +445,11 @@ export async function reconcile() {
             p.extRefs = kept;
             changed = true;
         }
+    }
+
+    // Scripts that read a saved key from their own settings never show a field to fill; link them too.
+    for (const p of store.profiles) {
+        if (p.key && linkExtensionsFor(p.id)) changed = true;
     }
 
     if (changed) store.save();
