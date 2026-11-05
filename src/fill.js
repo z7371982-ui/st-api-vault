@@ -5,9 +5,7 @@ import {
     KIND, classifyElement, findPartner, findModelField, fingerprint, scopeTitle, fieldLabel, setFieldValue, defaultVisible,
     eventTarget, deepActiveElement, shadowRootOf, closestComposed,
 } from './detect.js';
-import { resolveKey, syncToST } from './sync.js';
-import { beginFillIntent, commitFillIntent } from './bound-sync.js';
-import { initNavigation, captureNavigation, navigateToBinding } from './navigation.js';
+import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey } from './vault.js';
@@ -78,115 +76,132 @@ function flash(el) {
     );
 }
 
+/** valueHash is the hash of what the field holds after filling, to tell a stale copy from a hand edit later. */
 function bindingEntry(el, kind, profileId) {
+    const fp = rememberField(el);
+    const value = String(el.value || '').trim();
+    return fp ? [fp, { profileId, kind, scope: scopeTitle(el), label: fieldLabel(el), valueHash: value ? hashKey(value) : '' }] : null;
+}
+
+// ---------- bound fields: find, locate, keep in sync ----------
+
+// Fields seen this session by fingerprint, and shadow roots they live in, for finding a bound field again.
+const liveFields = new Map();
+const knownRoots = new Set();
+
+function rememberField(el) {
     const fp = fingerprint(el);
-    const pair = readPair(el, kind);
-    return fp ? [fp, { profileId, kind, scope: scopeTitle(el), label: fieldLabel(el),
-        guardVersion: 1, keyHash: hashKey(pair.key), urlSeen: pair.url,
-        partnerFp: pair.partner ? fingerprint(pair.partner) : null,
-        navigation: captureNavigation(el, store.binding(fp)?.navigation) }] : null;
+    if (fp) liveFields.set(fp, el);
+    return fp;
 }
 
-function rememberBindings(fields, profileId) {
-    const entries = fields.map(([el, kind]) => bindingEntry(el, kind, profileId)).filter(Boolean);
-    if (entries.length) store.bindMany(entries);
-    if (entries.length && entries.length === fields.length) return '';
-    return entries.length ? '部分输入框仅本次填入，未保存绑定' : '仅本次填入，未保存绑定';
-}
-
-function notifyFilled(message, bindingNotice) {
-    if (bindingNotice) toastr.warning(`${message}。${bindingNotice}`, TITLE, { timeOut: 4000 });
-    else toastr.success(message, TITLE, { timeOut: 1800 });
-}
-
-/** Explicitly updates selected, still-matching bindings in mounted document/open-shadow fields. */
-export function syncBoundFields(profileId, selectedFingerprints = null) {
-    const result = { updated: [], unchanged: [], skipped: [], missing: [] };
-    const p = store.get(profileId);
-    if (!p) return result;
-    const allowed = selectedFingerprints == null ? null : new Set(selectedFingerprints);
-    const bindings = new Map(store.bindingsFor(profileId));
-    const selected = new Map([...bindings].filter(([fp]) => !allowed || allowed.has(fp)));
-    const found = new Map();
-    const visit = root => {
-        for (const el of root.querySelectorAll('*')) {
-            if (el.shadowRoot) visit(el.shadowRoot);
-            if (!el.matches('input, textarea') || el.closest('.avm-root')) continue;
-            const fp = fingerprint(el);
-            if (fp && bindings.has(fp)) found.set(fp, [...(found.get(fp) || []), el]);
-        }
-    };
-    visit(document);
-    const done = new Set();
-    const updates = [];
-    const report = (bucket, fp, reason) => {
-        const b = selected.get(fp);
-        if (b) result[bucket].push({ scope: b.scope || '', label: b.label || KIND_LABEL[b.kind] || '', reason });
-        done.add(fp);
-    };
-    const urlEqual = (a, b) => (!a && !b) || sameUrl(a, b);
-    for (const [fp, b] of selected) {
-        if (done.has(fp)) continue;
-        const hits = found.get(fp) || [];
-        if (hits.length !== 1) { report(hits.length ? 'skipped' : 'missing', fp, '输入框未打开或不能唯一识别'); continue; }
-        const el = hits[0];
-        const pair = readPair(el, b.kind);
-        const partnerFp = pair.partner && fingerprint(pair.partner);
-        const group = [[fp, b, el]];
-        if (partnerFp && selected.has(partnerFp) && !done.has(partnerFp)) group.push([partnerFp, selected.get(partnerFp), pair.partner]);
-        const desired = { key: p.key || '', url: p.url || '' };
-        const changes = group.filter(([, record, field]) => field.value.trim() !== desired[record.kind]);
-        let reason = '';
-        for (const [id, record, field] of group) {
-            if (ST_PROXY_FIELDS.has(field.id)) reason = '酒馆反代由代理预设同步';
-            else if (found.get(id)?.length !== 1 || !field.isConnected || !defaultVisible(field) || classifyElement(field) !== record.kind) reason = '输入框已失效或无法编辑';
-            else if (record.guardVersion !== 1 || typeof record.keyHash !== 'string' || typeof record.urlSeen !== 'string') reason = '旧绑定缺少填入记录，请先重新用钥匙绑定';
-            else if (!desired[record.kind] || !field.value.trim()) reason = '不向空白渠道写入或清空已有凭据';
-            else if (!(hashKey(pair.key) === record.keyHash && urlEqual(pair.url, record.urlSeen))
-                && !(pair.key === desired.key && urlEqual(pair.url, desired.url))) reason = '输入框已改用其他地址或密钥';
-        }
-        if (pair.partner && changes.length) {
-            const partnerBinding = partnerFp && store.binding(partnerFp);
-            if (partnerBinding && partnerBinding.profileId !== profileId) reason = '配对输入框已绑定其他配置';
-            if (!group.some(([, , field]) => field === pair.partner) && pair.partner.value.trim() !== desired[other(b.kind)]) reason = '需要同时选择配对的地址和密钥输入框';
-        }
-        if (reason) { for (const [id] of group) report('skipped', id, reason); continue; }
-        const wasFilling = filling;
-        filling = true;
-        try {
-            // Validate the whole pair above, before either field's events can change the other.
-            // Set both native values before notifying reactive consumers of either change.
-            for (const [, record, field] of changes) {
-                const view = field.ownerDocument.defaultView;
-                const proto = field.tagName === 'TEXTAREA' ? view.HTMLTextAreaElement.prototype : view.HTMLInputElement.prototype;
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                if (setter) setter.call(field, desired[record.kind]);
-                else field.value = desired[record.kind];
+/** The bound field on the page right now, or null when its plugin window is not open. */
+function findField(fp, kind) {
+    const known = liveFields.get(fp);
+    if (known?.isConnected) return known;
+    for (const tree of [document, ...knownRoots]) {
+        if (tree.host && !tree.host.isConnected) continue;
+        for (const c of tree.querySelectorAll('input, textarea')) {
+            if (c.closest('.avm-root') || (kind && classifyElement(c) !== kind)) continue;
+            if (fingerprint(c) === fp) {
+                liveFields.set(fp, c);
+                return c;
             }
-            for (const [, , field] of changes) {
-                const Event = field.ownerDocument.defaultView.Event;
-                field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                field.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        } catch { reason = '插件未接受输入框更新'; }
-        finally { filling = wasFilling; }
-        if (group.some(([id, record, field]) => !field.isConnected || fingerprint(field) !== id || field.value.trim() !== desired[record.kind])) reason = '插件未保留输入框更新';
-        const after = readPair(el, b.kind);
-        if (!urlEqual(after.url, pair.partner || b.kind === KIND.URL ? desired.url : '')
-            || after.key !== (pair.partner || b.kind === KIND.KEY ? desired.key : '')) reason = '配对输入框在更新期间发生变化';
-        if (reason) { for (const [id] of group) report('skipped', id, reason); continue; }
-        for (const [id, record, field] of group) {
-            const entry = bindingEntry(field, record.kind, profileId);
-            if (entry && entry[0] === id) updates.push(entry);
-            report(changes.some(([, , changed]) => changed === field) ? 'updated' : 'unchanged', id, '');
-        }
-        if (partnerFp && bindings.has(partnerFp) && !selected.has(partnerFp)) {
-            const entry = bindingEntry(pair.partner, other(b.kind), profileId);
-            if (entry?.[0] === partnerFp) updates.push(entry);
         }
     }
-    if (updates.length) store.bindMany(updates);
-    return result;
+    return null;
+}
+
+/**
+ * Writes the profile's current URL / key into a bound field.
+ * Without `force`, only a field still holding what we wrote before (or a key this profile used to have)
+ * is touched, so a value the user typed there by hand is never overwritten.
+ * @returns {Promise<'done'|'same'|'skip'|'nodata'>}
+ */
+async function writeBound(fp, b, el, { force = false } = {}) {
+    const p = store.get(b.profileId);
+    if (!p) return 'nodata';
+    const want = b.kind === KIND.URL ? p.url : await resolveKey(p);
+    if (!want) return 'nodata';
+    const cur = String(el.value || '').trim();
+    if (cur === want) {
+        if (b.valueHash !== hashKey(want)) store.updateBinding(fp, { valueHash: hashKey(want) });
+        return 'same';
+    }
+    if (!force) {
+        const h = cur ? hashKey(cur) : '';
+        const ours = !!cur && (h === b.valueHash || (b.kind === KIND.KEY && (p.prevKeys || []).includes(h)));
+        if (!ours) return 'skip';
+    }
+    filling = true;
+    try {
+        setFieldValue(el, want);
+        flash(el);
+    } finally {
+        filling = false;
+    }
+    store.updateBinding(fp, { valueHash: hashKey(want) });
+    return 'done';
+}
+
+/** Manual "同步" on one binding: overwrites the field if its plugin window is open. */
+export async function syncBinding(fp) {
+    const b = store.binding(fp);
+    if (!b) return 'nodata';
+    const el = findField(fp, b.kind);
+    if (!el) return 'absent';
+    return writeBound(fp, b, el, { force: true });
+}
+
+/** Scrolls to a bound field and flashes it. False when its plugin window is not open. */
+export function locateBinding(fp) {
+    const b = store.binding(fp);
+    const el = b && findField(fp, b.kind);
+    if (!el || !defaultVisible(el)) return false;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.focus({ preventScroll: true });
+    flash(el);
+    return true;
+}
+
+/** Updates every open bound field of a profile. Returns how many were changed. */
+export async function syncProfileFields(profileId, { force = false } = {}) {
+    let n = 0;
+    for (const [fp, b] of store.bindingsFor(profileId)) {
+        const el = findField(fp, b.kind);
+        if (el && (await writeBound(fp, b, el, { force })) === 'done') n++;
+    }
+    return n;
+}
+
+/** On focus: a bound field still showing an old key / URL of its profile gets the current one. */
+async function refreshStale(el, kind) {
+    const fields = [el, findPartner(el, other(kind))].filter(Boolean);
+    let done = 0;
+    let name = '';
+    for (const f of fields) {
+        const fp = fingerprint(f);
+        const b = fp && store.binding(fp);
+        if (!b) continue;
+        if ((await writeBound(fp, b, f)) === 'done') {
+            done++;
+            name = store.get(b.profileId)?.name || '';
+        }
+    }
+    if (done) toastr.info(`已把「${esc(name)}」的最新地址 / 密钥同步到这里`, TITLE, { timeOut: 2200 });
+}
+
+/** Plugins save their settings a moment after a field changes; look for the stored copy then. */
+function linkSoon(profileId) {
+    for (const ms of [1500, 5000]) {
+        setTimeout(() => {
+            try {
+                linkExtensionsFor(profileId);
+            } catch (err) {
+                console.warn('[API Vault] linking plugin settings failed', err);
+            }
+        }, ms);
+    }
 }
 
 /**
@@ -206,17 +221,8 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
     if (ST_PROXY_FIELDS.has(el.id)) {
         if (quiet) return false;
         try {
-            const saved = store.get(profile.id) || profile;
-            const maskedSlot = !saved.key && saved.stRef && !saved.stMissing ? saved.stRef.key : '';
-            const slotTarget = (saved.syncTarget && saved.syncTarget !== 'none' ? saved.syncTarget : '') || maskedSlot;
             const what = await syncToST(profile);
-            const tree = el.getRootNode();
-            const fields = [...ST_PROXY_FIELDS].map(id => tree.querySelector(`[id="${id}"]`))
-                .filter(f => f?.matches('input, textarea'))
-                .map(f => [f, f.id === 'openai_reverse_proxy' ? KIND.URL : KIND.KEY]);
-            // A provider secret-slot switch does not fill these reverse-proxy fields.
-            const notice = slotTarget ? '' : rememberBindings(fields, profile.id);
-            notifyFilled(`酒馆现在使用${esc(what)}`, notice);
+            toastr.success(`酒馆现在使用${esc(what)}`, TITLE, { timeOut: 1800 });
             emit();
             return true;
         } catch (err) {
@@ -258,7 +264,6 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
     const modelEl = p.model ? findModelField(el) : null;
     const fillModel = modelEl && (!keepFilled || !modelEl.value.trim()) && modelEl.value.trim() !== p.model;
 
-    const intent = !quiet && todo.length ? beginFillIntent(p.id) : null;
     filling = true;
     try {
         for (const [f, k] of todo) {
@@ -273,13 +278,13 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
         filling = false;
     }
 
-    const bindingNotice = rememberBindings(fields, p.id);
-    commitFillIntent(intent, fields.map(([field]) => fingerprint(field)).filter(Boolean));
+    store.bindMany(fields.map(([f, k]) => bindingEntry(f, k, p.id)).filter(Boolean));
     store.touch(p.id);
+    linkSoon(p.id);
     if (!quiet) {
         const parts = todo.length > 1 ? '地址和密钥' : KIND_LABEL[todo[0]?.[1] ?? kind];
         const what = fillModel ? `${parts}、模型` : parts;
-        notifyFilled(`已填入「${esc(p.name)}」的${what}`, bindingNotice);
+        toastr.success(`已填入「${esc(p.name)}」的${what}`, TITLE, { timeOut: 1800 });
     }
     emit();
     return true;
@@ -305,6 +310,7 @@ export function captureFrom(el = target?.el) {
     if (partner) entries.push(bindingEntry(partner, other(kind), p.id));
     const bindings = entries.filter(Boolean);
     store.bindMany(bindings);
+    linkSoon(p.id);
     toastr.success(`已保存为「${esc(p.name)}」${bindings.length ? '并绑定输入框' : ''}`, TITLE);
     emit();
     return p;
@@ -317,47 +323,6 @@ export function focusTarget() {
     t.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     t.el.focus({ preventScroll: true });
     flash(t.el);
-}
-
-/** Reopen the recorded plugin/settings/channel route, then validate and focus the bound field. */
-export async function locateBoundField(fp) {
-    if (!fp) return { ok: false, reason: '输入框没有稳定标识' };
-    const binding = store.binding(fp);
-    if (!binding) return { ok: false, reason: '绑定已不存在' };
-    const profile = store.get(binding.profileId);
-    const finder = (validate = true) => {
-        const matches = [];
-        const visit = root => {
-            for (const el of root.querySelectorAll('*')) {
-                if (el.shadowRoot) visit(el.shadowRoot);
-                if (el.matches('input, textarea') && !closestComposed(el, '.avm-root') && fingerprint(el) === fp) matches.push(el);
-            }
-        };
-        visit(document);
-        if (matches.length !== 1 || classifyElement(matches[0]) !== binding.kind) return null;
-        const el = matches[0];
-        if (!validate) return el;
-        const pair = readPair(el, binding.kind);
-        const urlEqual = (a, b) => (!a && !b) || sameUrl(a, b);
-        if (binding.guardVersion !== 1 || typeof binding.keyHash !== 'string' || typeof binding.urlSeen !== 'string') return null;
-        if (binding.partnerFp && (!pair.partner || fingerprint(pair.partner) !== binding.partnerFp)) return null;
-        if ((hashKey(pair.key) !== binding.keyHash && (!profile?.key || pair.key !== profile.key))
-            || (!urlEqual(pair.url, binding.urlSeen) && (!profile?.url || !urlEqual(pair.url, profile.url)))) return null;
-        return el;
-    };
-    const wasFilling = filling;
-    filling = true; // Navigation may move focus; locating must never trigger automatic filling.
-    let el;
-    try { el = await navigateToBinding(binding, finder, () => finder(false)); }
-    finally { filling = wasFilling; }
-    if (!el || finder() !== el || !defaultVisible(el)) return { ok: false,
-        reason: binding.navigation ? '未能安全打开原插件渠道，或输入框已改用其他配置' : '此旧绑定尚未记录打开路径，请打开插件并重新绑定一次' };
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    filling = true; // Locating an empty field must not trigger automatic filling.
-    try { el.focus({ preventScroll: true }); }
-    finally { filling = wasFilling; }
-    flash(el);
-    return { ok: true, reason: '' };
 }
 
 // ---------- positioning ----------
@@ -773,6 +738,7 @@ function watchShadowRoot(el) {
     for (let root = shadowRootOf(el); root; root = shadowRootOf(root.host)) {
         if (watchedRoots.has(root)) continue;
         watchedRoots.add(root);
+        knownRoots.add(root);
         root.addEventListener('change', onChange, true);
         root.addEventListener('focusin', onFocusIn, true);
         root.addEventListener('focusout', onFocusOut, true);
@@ -798,16 +764,14 @@ function onFocusIn(e) {
     if (target?.el !== el) closePop(false);
     const urlField = kind === KIND.KEY ? findPartner(el, KIND.URL) : null;
     target = { el, kind, anchor: urlField || el };
-    if (!filling) {
-        const fp = fingerprint(el), binding = fp && store.binding(fp);
-        if (binding) {
-            const navigation = captureNavigation(el, binding.navigation);
-            if (navigation && JSON.stringify(navigation) !== JSON.stringify(binding.navigation)) store.bindMany([[fp, { ...binding, navigation }]]);
-        }
-    }
+    rememberField(el);
     showPill();
     emit();
-    if (!filling) maybeAutoFill(el).catch(err => console.warn('[API Vault] auto-fill failed', err));
+    const refresh = store.options.autoSync ? refreshStale(el, kind) : Promise.resolve();
+    refresh
+        .catch(err => console.warn('[API Vault] refreshing bound field failed', err))
+        .then(() => maybeAutoFill(el))
+        .catch(err => console.warn('[API Vault] auto-fill failed', err));
 }
 
 function onFocusOut(e) {
@@ -864,7 +828,6 @@ function onKeyDown(e) {
 }
 
 export function initFill(opts = {}) {
-    initNavigation();
     openPanel = opts.openPanel || openPanel;
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('focusout', onFocusOut, true);

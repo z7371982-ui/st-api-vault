@@ -700,45 +700,6 @@
     gap: 10px;
 }
 
-.avm-model-picker {
-    min-width: 0;
-}
-
-.avm-model-options:not([hidden]) {
-    display: flex;
-    flex-direction: column;
-    max-height: 220px;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    border: 1px solid var(--avm-line);
-    border-radius: 9px;
-    padding: 4px;
-    gap: 2px;
-}
-
-.avm-model-option {
-    flex: 0 0 auto;
-    width: 100%;
-    min-height: 44px;
-    padding: 8px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--avm-fg);
-    font: inherit;
-    text-align: left;
-    overflow-wrap: anywhere;
-    cursor: pointer;
-}
-
-.avm-model-option:hover,
-.avm-model-option:focus-visible,
-.avm-model-option[aria-pressed="true"] {
-    background: var(--avm-accent-soft);
-    outline: 1px solid var(--avm-accent);
-    outline-offset: -1px;
-}
-
 .avm-paste {
     border: 1px dashed var(--avm-accent);
     border: 1px dashed color-mix(in srgb, var(--avm-accent) 50%, transparent);
@@ -869,32 +830,131 @@
     white-space: nowrap;
 }
 
-.avm-binding-location,
-.avm-bindings [data-binding-alias] {
-    flex: 1;
-    min-width: 0;
+.avm-bindings .avm-binding-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 
-.avm-binding-location {
+.avm-binding-text b,
+.avm-binding-text small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.avm-binding-text small {
+    font-size: 0.82em;
+    color: var(--avm-muted);
+}
+
+/* ---------- model picker ---------- */
+
+.avm-combo {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.avm-root .avm-combo input {
+    flex: 1;
+    min-width: 0;
+    padding-right: 64px;
+}
+
+.avm-combo-btn {
+    position: absolute;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin-top: -14px;
+    padding: 0;
     border: 0;
-    padding: 6px 0;
+    border-radius: 6px;
     background: transparent;
-    color: var(--avm-accent);
-    font: inherit;
-    text-align: left;
-    overflow-wrap: anywhere;
+    color: var(--avm-muted);
     cursor: pointer;
 }
 
-.avm-bindings [hidden] { display: none !important; }
-.avm-bindings .avm-btn { padding: 6px; font-size: 12px; }
-.avm-bindings .avm-icon-btn { flex-shrink: 0; }
+.avm-combo-btn[hidden] {
+    display: none;
+}
+
+.avm-combo-btn[data-act="model-toggle"] {
+    right: 4px;
+}
+
+.avm-combo-btn[data-act="model-clear"] {
+    right: 32px;
+}
+
+.avm-combo-btn:hover {
+    background: var(--avm-faint);
+    color: var(--avm-fg);
+}
+
+.avm-combo-btn.is-open i {
+    transform: rotate(180deg);
+}
+
+.avm-combo-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 5;
+    max-height: 260px;
+    margin: 0;
+    padding: 4px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    list-style: none;
+    border: 1px solid var(--avm-line);
+    border-radius: 10px;
+    background: var(--SmartThemeChatTintColor, #222);
+    box-shadow: var(--avm-shadow);
+}
+
+.avm-combo-menu[hidden] {
+    display: none;
+}
+
+.avm-combo-menu li {
+    padding: 8px 10px;
+    border-radius: 7px;
+    font-size: 0.95em;
+    font-weight: 400;
+    color: var(--avm-fg);
+    cursor: pointer;
+    word-break: break-all;
+}
+
+.avm-combo-menu li:hover,
+.avm-combo-menu li.is-on {
+    background: var(--avm-accent-soft);
+}
+
+.avm-combo-menu .avm-combo-more {
+    color: var(--avm-muted);
+    cursor: default;
+}
+
+.avm-combo-menu .avm-combo-more:hover {
+    background: transparent;
+}
+
+@media (max-width: 768px) {
+    .avm-combo-menu li {
+        padding: 12px 10px;
+    }
+}
 
 .avm-form-actions {
     position: sticky;
     bottom: -14px;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     margin: 4px -14px -14px;
@@ -1361,11 +1421,6 @@
 
     .avm-card-actions .avm-btn.is-primary {
         flex: 1;
-    }
-
-    .avm-form-actions [data-act="save-bound-sync"] {
-        flex: 0 0 100%;
-        order: -1;
     }
 
     /* 16px stops iOS from zooming into focused inputs. */

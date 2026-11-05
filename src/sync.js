@@ -8,7 +8,6 @@ import { st } from './st.js';
 import { proxy } from './proxy.js';
 import { scanExtensionSettings, readAt, writeAt } from './scan.js';
 import { hashKey, findProfileByPair, maskMatches, extRefId, proxyHash, urlIdentity, sameUrl } from './vault.js';
-import { boundRefIdentityMatches, notifyBoundSyncTargets } from './bound-sync.js';
 
 const ST_SOURCE = '酒馆';
 const PROXY_SOURCE = '反向代理';
@@ -91,6 +90,27 @@ function claimExtRefs(owner, refs) {
         const kept = o.extRefs.filter(r => !ids.has(extRefId(r)));
         if (kept.length !== o.extRefs.length) o.extRefs = kept;
     }
+}
+
+/**
+ * Links every place in other extensions' settings that holds this profile's key (and address),
+ * so a later key change in the vault is written there too. Runs after a fill: the plugin has
+ * saved what was typed into its field by then. Returns how many new places were linked.
+ */
+export function linkExtensionsFor(profileId) {
+    const p = store.get(profileId);
+    if (!p?.key) return 0;
+    const known = new Set(p.extRefs.map(extRefId));
+    const fresh = [];
+    for (const s of scanExtensionSettings(ctx.extensionSettings)) {
+        if (s.key !== p.key || (s.url && p.url && !sameUrl(s.url, p.url))) continue;
+        for (const r of s.refs) if (!known.has(extRefId(r))) fresh.push(r);
+    }
+    if (!fresh.length) return 0;
+    claimExtRefs(p, fresh);
+    p.extRefs = mergeExtRefs(p.extRefs, fresh);
+    store.save();
+    return fresh.length;
 }
 
 /** Names the user gave in ST's Connection Manager, keyed by the secret id a profile points at. */
@@ -333,7 +353,6 @@ async function reconcileProxies() {
 
 /** A linked setting is writable only while both credentials still match its baseline. */
 function extensionRefMatches(p, r) {
-    if (!boundRefIdentityMatches(r)) return false;
     const value = readAt(ctx.extensionSettings, r.segs, r.keyProp);
     if (typeof value !== 'string' || (hashKey(value.trim()) !== r.hash && value.trim() !== p.key)) return false;
     if (!r.urlProp) return true;
@@ -402,7 +421,7 @@ export async function reconcile() {
         if (!p.extRefs.length) continue;
         const kept = p.extRefs.filter(r => {
             // External URL/key edits detach the old link instead of being overwritten later.
-            if (!extensionRefMatches(p, r)) return r.bound === true;
+            if (!extensionRefMatches(p, r)) return false;
             if (r.urlProp && r.urlSeen === undefined) {
                 r.urlSeen = readAt(ctx.extensionSettings, r.segs, r.urlProp);
                 changed = true;
@@ -410,7 +429,6 @@ export async function reconcile() {
             return true;
         });
         for (const r of kept) {
-            if (!extensionRefMatches(p, r)) continue;
             if (!r.nameProp) continue;
             const n = readAt(ctx.extensionSettings, r.segs, r.nameProp);
             if (typeof n !== 'string' || n.trim() === r.nameSeen) continue;
@@ -448,11 +466,9 @@ function pushToExtensions(p) {
         return typeof cur === 'string' && cur.trim() !== value && writeAt(ctx.extensionSettings, r.segs, prop, value);
     };
     let n = 0;
-    const touchedRefs = [];
     // Recheck after async ST/proxy writes, which may have allowed another extension to edit settings.
-    p.extRefs = p.extRefs.filter(r => r.bound || extensionRefMatches(p, r));
+    p.extRefs = p.extRefs.filter(r => extensionRefMatches(p, r));
     for (const r of p.extRefs) {
-        if (!extensionRefMatches(p, r)) continue;
         if (typeof readAt(ctx.extensionSettings, r.segs, r.keyProp) !== 'string') continue;
         let touched = set(r, r.keyProp, p.key);
         if (r.urlProp && p.url && set(r, r.urlProp, p.url)) touched = true;
@@ -463,12 +479,9 @@ function pushToExtensions(p) {
         }
         r.hash = hash;
         if (r.urlProp) r.urlSeen = readAt(ctx.extensionSettings, r.segs, r.urlProp);
-        if (touched) { n++; touchedRefs.push(r); }
+        if (touched) n++;
     }
-    if (n) {
-        notifyBoundSyncTargets(touchedRefs);
-        ctx.saveSettingsDebounced();
-    }
+    if (n) ctx.saveSettingsDebounced();
     return n;
 }
 

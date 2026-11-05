@@ -76,9 +76,8 @@ export function createProfile(p = {}) {
         syncedHash: str(p.syncedHash),
         // places in other extensions' settings that hold this key
         extRefs: Array.isArray(p.extRefs) ? p.extRefs.map(normExtRef).filter(Boolean) : [],
-        // Previous credentials identify pending manual sync candidates without storing extra raw keys.
-        syncBaselines: Array.isArray(p.syncBaselines) ? p.syncBaselines
-            .filter(b => b && str(b.hash)).map(b => ({ hash: str(b.hash), url: str(b.url) })).slice(0, 20) : [],
+        // hashes of keys this profile held before, so plugin fields still showing an old one can be refreshed
+        prevKeys: Array.isArray(p.prevKeys) ? p.prevKeys.filter(h => typeof h === 'string' && h).slice(-10) : [],
         models: Array.isArray(p.models) ? p.models.filter(m => typeof m === 'string' && m).slice(0, 2000) : [],
         modelsAt: num(p.modelsAt, 0),
         health: normHealth(p.health),
@@ -116,18 +115,22 @@ function normExtRef(r) {
         segs: r.segs.map(String), keyProp: str(r.keyProp), urlProp: str(r.urlProp), source: str(r.source), hash: str(r.hash),
         urlSeen: typeof r.urlSeen === 'string' ? r.urlSeen : undefined,
         nameProp: str(r.nameProp), nameSeen: str(r.nameSeen),
-        bound: r.bound === true,
-        manualOnly: r.manualOnly === true,
-        bindingFps: Array.isArray(r.bindingFps) ? [...new Set(r.bindingFps.filter(fp => typeof fp === 'string' && fp))] : [],
-        identity: r.identity && Array.isArray(r.identity.segs)
-            && ['id', 'uuid', 'uid', 'channelId'].includes(r.identity.prop) && str(r.identity.value)
-            ? { segs: r.identity.segs.map(String), prop: r.identity.prop, value: str(r.identity.value) } : undefined,
     };
 }
 
 /** Stable id of an extension settings location, e.g. "translate.nested.apiKey". */
 export function extRefId(r) {
     return [...r.segs, r.keyProp].join('.');
+}
+
+/**
+ * Whether a bound plugin field still holds what the profile has now.
+ * 'ok' / 'stale', or '' for bindings made before fills were recorded (and masked-only keys).
+ */
+export function bindingStatus(b, p) {
+    const want = b?.kind === 'url' ? p?.url : p?.key;
+    if (!b?.valueHash || !want) return '';
+    return b.valueHash === hashKey(want) ? 'ok' : 'stale';
 }
 
 export function normalizeUrl(url) {

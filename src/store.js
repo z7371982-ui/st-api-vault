@@ -4,17 +4,6 @@ import { MODULE, migrate, createProfile, hashKey } from './vault.js';
 let ctx = null;
 const listeners = new Set();
 
-function detachFieldRefs(settings, fp, ownerId = null) {
-    for (const p of settings.profiles) {
-        if (ownerId && p.id !== ownerId) continue;
-        p.extRefs = p.extRefs.filter(r => {
-            if (!r.bindingFps?.includes(fp)) return true;
-            r.bindingFps = r.bindingFps.filter(item => item !== fp);
-            return !r.bound || r.bindingFps.length > 0;
-        });
-    }
-}
-
 export const store = {
     init(context) {
         ctx = context;
@@ -66,6 +55,11 @@ export const store = {
         );
         // Credential edits invalidate cached tests; a newly tested draft may supply fresh results.
         const reset = changed ? { health: null, models: [], modelsAt: 0 } : {};
+        // Remember the replaced key, so plugin fields that still show it can be told apart from hand edits.
+        if (existing?.key && 'key' in data && data.key && data.key !== existing.key) {
+            const old = hashKey(existing.key);
+            reset.prevKeys = [...(existing.prevKeys || []).filter(h => h !== old), old].slice(-10);
+        }
         const profile = createProfile({ ...existing, ...reset, ...data, updatedAt: Date.now() });
         if (existing) Object.assign(existing, profile);
         else this.profiles.push(profile);
@@ -113,8 +107,6 @@ export const store = {
     },
 
     bind(fp, data) {
-        const previous = this.settings.bindings[fp];
-        if (previous && previous.profileId !== data.profileId) detachFieldRefs(this.settings, fp, previous.profileId);
         this.settings.bindings[fp] = { ...data, at: Date.now() };
         this.save();
     },
@@ -123,16 +115,24 @@ export const store = {
     bindMany(entries) {
         const at = Date.now();
         for (const [fp, data] of entries) {
-            const previous = this.settings.bindings[fp];
-            if (previous && previous.profileId !== data.profileId) detachFieldRefs(this.settings, fp, previous.profileId);
-            this.settings.bindings[fp] = { ...(previous?.alias ? { alias: previous.alias } : {}), ...data, at };
+            // A name the user gave this field survives refilling it from the same profile.
+            const prev = this.settings.bindings[fp];
+            const keep = prev?.alias && prev.profileId === data.profileId ? { alias: prev.alias } : {};
+            this.settings.bindings[fp] = { ...keep, ...data, at };
         }
+        this.save();
+    },
+
+    /** Patches one binding, e.g. its alias or the hash of the value last written into the field. */
+    updateBinding(fp, patch) {
+        const b = this.settings.bindings[fp];
+        if (!b) return;
+        Object.assign(b, patch);
         this.save();
     },
 
     unbind(fp) {
         delete this.settings.bindings[fp];
-        detachFieldRefs(this.settings, fp);
         this.save();
     },
 
