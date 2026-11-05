@@ -234,8 +234,35 @@ export function fingerprint(el) {
     const root = scope || shadow || el.ownerDocument.body;
     const signature = node => node.getAttribute('name') || node.getAttribute('placeholder');
     const sig = signature(el);
-    if (!sig || (scope && !uniqueId(scope))) return null;
-    if ([...root.querySelectorAll(el.tagName)].filter(n => signature(n) === sig).length !== 1) return null;
+    if (!sig) {
+        // A label is useful only inside an independently identifiable form/drawer.
+        // Generic dialogs often reuse one editor for many channels; do not bind those by label.
+        if (closestComposed(el, 'dialog, .popup, [role="dialog"]')) return null;
+        let boundary = el.closest(BOUNDARY_SELECTOR + ', .inline-drawer');
+        if (!boundary || boundary.matches('dialog, .popup, [role="dialog"]')) return null;
+        if (boundary.matches('.inline-drawer-content') && !boundary.id) boundary = boundary.closest('.inline-drawer');
+        if (!boundary?.id || RANDOMISH_ID.test(boundary.id) || !uniqueId(boundary)) return null;
+        const labelOf = node => clean(node.getAttribute('aria-label')) || fieldLabel(node);
+        const label = labelOf(el);
+        if (!label || [...boundary.querySelectorAll(el.tagName)].filter(n => labelOf(n) === label).length !== 1) return null;
+        return `v3:${JSON.stringify([hostId || '', boundary.id, el.tagName.toLowerCase(), label])}`;
+    }
+    if (scope && !uniqueId(scope)) return null;
+    if ([...root.querySelectorAll(el.tagName)].filter(n => signature(n) === sig).length !== 1) {
+        // A named editor can reuse the same placeholders as its plugin's main settings.
+        // Keep that editor position distinct, without guessing a channel or a body-wide owner.
+        const dialog = el.closest('dialog, .popup, [role="dialog"]');
+        const dialogLabel = clean(dialog?.getAttribute('aria-label'));
+        if (!dialogLabel || [...tree.querySelectorAll('dialog, .popup, [role="dialog"]')]
+            .filter(n => clean(n.getAttribute('aria-label')) === dialogLabel).length !== 1) return null;
+        if ([...dialog.querySelectorAll(el.tagName)].filter(n => signature(n) === sig).length !== 1) return null;
+        let owner = dialog.parentElement;
+        while (owner && (!owner.id || RANDOMISH_ID.test(owner.id))) owner = owner.parentElement;
+        const stableOwner = hostId || (owner && owner !== el.ownerDocument.body && owner !== el.ownerDocument.documentElement
+            && uniqueId(owner) ? `#${owner.id}` : '');
+        if (!stableOwner) return null;
+        return `v4:${JSON.stringify([stableOwner, dialogLabel, el.tagName.toLowerCase(), sig])}`;
+    }
     // Retire old name/placeholder and positional bindings, which could have been ambiguous.
     return `v2:${prefix}${scope ? `#${scope.id}` : shadow ? 'shadow' : 'body'} ${el.tagName.toLowerCase()}[${sig}]`;
 }

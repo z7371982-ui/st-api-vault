@@ -5,6 +5,7 @@ import { proxy } from './src/proxy.js';
 import { initSync, autoImport, scheduleImport, scheduleReconcile } from './src/sync.js';
 import { initProbe } from './src/probe.js';
 import { initFill } from './src/fill.js';
+import { initBoundSync, resolveFillIntents } from './src/bound-sync.js';
 import { initPanel, openPanel, togglePanel } from './src/panel.js';
 
 function addMenuEntry() {
@@ -63,6 +64,7 @@ async function init() {
     st.init(ctx);
     proxy.init(ctx);
     initSync(ctx);
+    initBoundSync(ctx);
     initProbe(ctx);
     initPanel(ctx);
     initFill({ openPanel });
@@ -82,6 +84,7 @@ async function init() {
     on('SECRET_ROTATED', () => scheduleReconcile());
     on('SECRET_EDITED', () => scheduleReconcile());
     on('SETTINGS_UPDATED', () => {
+        resolveFillIntents();
         scheduleReconcile(1500);
         if (store.options.autoImport) scheduleImport();
     });

@@ -8,6 +8,7 @@ import { st } from './st.js';
 import { proxy } from './proxy.js';
 import { scanExtensionSettings, readAt, writeAt } from './scan.js';
 import { hashKey, findProfileByPair, maskMatches, extRefId, proxyHash, urlIdentity, sameUrl } from './vault.js';
+import { boundRefIdentityMatches, notifyBoundSyncTargets } from './bound-sync.js';
 
 const ST_SOURCE = '酒馆';
 const PROXY_SOURCE = '反向代理';
@@ -332,6 +333,7 @@ async function reconcileProxies() {
 
 /** A linked setting is writable only while both credentials still match its baseline. */
 function extensionRefMatches(p, r) {
+    if (!boundRefIdentityMatches(r)) return false;
     const value = readAt(ctx.extensionSettings, r.segs, r.keyProp);
     if (typeof value !== 'string' || (hashKey(value.trim()) !== r.hash && value.trim() !== p.key)) return false;
     if (!r.urlProp) return true;
@@ -400,7 +402,7 @@ export async function reconcile() {
         if (!p.extRefs.length) continue;
         const kept = p.extRefs.filter(r => {
             // External URL/key edits detach the old link instead of being overwritten later.
-            if (!extensionRefMatches(p, r)) return false;
+            if (!extensionRefMatches(p, r)) return r.bound === true;
             if (r.urlProp && r.urlSeen === undefined) {
                 r.urlSeen = readAt(ctx.extensionSettings, r.segs, r.urlProp);
                 changed = true;
@@ -408,6 +410,7 @@ export async function reconcile() {
             return true;
         });
         for (const r of kept) {
+            if (!extensionRefMatches(p, r)) continue;
             if (!r.nameProp) continue;
             const n = readAt(ctx.extensionSettings, r.segs, r.nameProp);
             if (typeof n !== 'string' || n.trim() === r.nameSeen) continue;
@@ -445,9 +448,11 @@ function pushToExtensions(p) {
         return typeof cur === 'string' && cur.trim() !== value && writeAt(ctx.extensionSettings, r.segs, prop, value);
     };
     let n = 0;
+    const touchedRefs = [];
     // Recheck after async ST/proxy writes, which may have allowed another extension to edit settings.
-    p.extRefs = p.extRefs.filter(r => extensionRefMatches(p, r));
+    p.extRefs = p.extRefs.filter(r => r.bound || extensionRefMatches(p, r));
     for (const r of p.extRefs) {
+        if (!extensionRefMatches(p, r)) continue;
         if (typeof readAt(ctx.extensionSettings, r.segs, r.keyProp) !== 'string') continue;
         let touched = set(r, r.keyProp, p.key);
         if (r.urlProp && p.url && set(r, r.urlProp, p.url)) touched = true;
@@ -458,9 +463,12 @@ function pushToExtensions(p) {
         }
         r.hash = hash;
         if (r.urlProp) r.urlSeen = readAt(ctx.extensionSettings, r.segs, r.urlProp);
-        if (touched) n++;
+        if (touched) { n++; touchedRefs.push(r); }
     }
-    if (n) ctx.saveSettingsDebounced();
+    if (n) {
+        notifyBoundSyncTargets(touchedRefs);
+        ctx.saveSettingsDebounced();
+    }
     return n;
 }
 

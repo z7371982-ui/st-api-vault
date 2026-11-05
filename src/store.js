@@ -4,6 +4,17 @@ import { MODULE, migrate, createProfile, hashKey } from './vault.js';
 let ctx = null;
 const listeners = new Set();
 
+function detachFieldRefs(settings, fp, ownerId = null) {
+    for (const p of settings.profiles) {
+        if (ownerId && p.id !== ownerId) continue;
+        p.extRefs = p.extRefs.filter(r => {
+            if (!r.bindingFps?.includes(fp)) return true;
+            r.bindingFps = r.bindingFps.filter(item => item !== fp);
+            return !r.bound || r.bindingFps.length > 0;
+        });
+    }
+}
+
 export const store = {
     init(context) {
         ctx = context;
@@ -102,6 +113,8 @@ export const store = {
     },
 
     bind(fp, data) {
+        const previous = this.settings.bindings[fp];
+        if (previous && previous.profileId !== data.profileId) detachFieldRefs(this.settings, fp, previous.profileId);
         this.settings.bindings[fp] = { ...data, at: Date.now() };
         this.save();
     },
@@ -109,12 +122,17 @@ export const store = {
     /** @param {[string, object][]} entries fingerprint -> binding data */
     bindMany(entries) {
         const at = Date.now();
-        for (const [fp, data] of entries) this.settings.bindings[fp] = { ...data, at };
+        for (const [fp, data] of entries) {
+            const previous = this.settings.bindings[fp];
+            if (previous && previous.profileId !== data.profileId) detachFieldRefs(this.settings, fp, previous.profileId);
+            this.settings.bindings[fp] = { ...(previous?.alias ? { alias: previous.alias } : {}), ...data, at };
+        }
         this.save();
     },
 
     unbind(fp) {
         delete this.settings.bindings[fp];
+        detachFieldRefs(this.settings, fp);
         this.save();
     },
 

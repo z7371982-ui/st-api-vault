@@ -4,7 +4,8 @@ import { store } from './store.js';
 import { st } from './st.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST } from './sync.js';
 import { probe } from './probe.js';
-import { KIND_LABEL } from './fill.js';
+import { KIND_LABEL, syncBoundFields, locateBoundField } from './fill.js';
+import { rememberSyncBaseline, resolveFillIntents, listBoundSyncTargets, syncBoundExtensions } from './bound-sync.js';
 import { isCompact, isTouch, swipeToClose, trackViewport, createFab } from './sheet.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
@@ -20,6 +21,7 @@ let editId = null;
 let query = '';
 let tag = '';
 let importState = null; // { loading, canView, items, picked:Set }
+let boundSyncState = null;
 // Editor-only state for the connection test, kept outside the form so re-renders do not lose it.
 let probeState = null; // { busy, ok, text, models:string[] }
 let editorEpoch = 0;
@@ -144,6 +146,7 @@ function card(p) {
         </div>
         ${badges || p.tags.length ? `<div class="avm-card-meta">${badges}${p.tags.map(x => `<span class="avm-tag">#${esc(x)}</span>`).join('')}</div>` : ''}
         <div class="avm-card-actions">
+            <button type="button" class="avm-btn" data-act="bound-sync" ${p.key ? '' : 'disabled'}>同步插件</button>
             <button type="button" class="avm-btn is-primary" data-act="sync" ${(p.key || (p.stRef && !p.stMissing) || (p.proxyRef && !p.proxyMissing)) && !active ? '' : 'disabled'} title="${active ? '酒馆已经在用这个配置' : (p.syncTarget || (!p.key && p.stRef) ? '设为酒馆 API 密钥栏当前使用的密钥' : '在酒馆的代理预设里选中它（没有的话会先创建）')}">
                 <i class="fa-solid fa-plug"></i>${active ? '使用中' : '用于酒馆'}
             </button>
@@ -254,10 +257,12 @@ function editView() {
             </label>
             ${testSection(p)}
             <div class="avm-grid2">
-                <label class="avm-label">模型（可选）
-                    <input name="model" type="text" value="${esc(v.model)}" placeholder="${models.length ? `从 ${models.length} 个模型里选，或直接输入` : 'gpt-4o / claude-…'}" spellcheck="false" list="avm_models_datalist">
-                    <datalist id="avm_models_datalist">${models.map(m => `<option value="${esc(m)}"></option>`).join('')}</datalist>
-                </label>
+                <div class="avm-label avm-model-picker">
+                    <label for="avm_model_input">模型（可选）</label>
+                    <input id="avm_model_input" name="model" type="text" value="${esc(v.model)}" placeholder="${models.length ? `从 ${models.length} 个模型里选，或直接输入` : 'gpt-4o / claude-…'}" spellcheck="false" autocomplete="off">
+                    <button type="button" class="avm-btn" data-act="toggle-models" aria-expanded="false" aria-controls="avm_model_options" ${models.length ? '' : 'disabled'}>选择模型</button>
+                    <div id="avm_model_options" class="avm-model-options" role="group" aria-label="可选模型" hidden></div>
+                </div>
                 <label class="avm-label">标签
                     <input name="tags" type="text" value="${esc(v.tags.join(', '))}" placeholder="主力, 翻译, 备用">
                 </label>
@@ -276,14 +281,20 @@ function editView() {
             </label>
             ${bindings.length ? `<div class="avm-label">已绑定的输入框
                 <ul class="avm-bindings">
-                    ${bindings.map(([fp, b]) => `<li><span><b>${esc(b.scope || '页面')}</b> · ${esc(b.label || KIND_LABEL[b.kind] || '')}</span>
-                        <button type="button" class="avm-icon-btn" data-act="unbind" data-fp="${esc(fp)}" title="解除绑定" aria-label="解除绑定"><i class="fa-solid fa-xmark"></i></button></li>`).join('')}
+                    ${bindings.map(([fp, b]) => `<li data-binding-fp="${esc(fp)}">
+                        <button type="button" class="avm-binding-location" data-act="locate-binding">${esc(b.alias || `${b.scope || '页面'} · ${b.label || KIND_LABEL[b.kind] || ''}`)}</button>
+                        <input hidden type="text" data-binding-alias="${esc(fp)}" aria-label="自定义位置名称" maxlength="48" value="${esc(b.alias || b.scope || '页面')}">
+                        <button type="button" class="avm-btn" data-act="rename-binding">改名</button>
+                        <button type="button" class="avm-btn" data-act="sync-binding">同步</button>
+                        <button type="button" class="avm-icon-btn" data-act="unbind" data-fp="${esc(fp)}" title="解除绑定" aria-label="解除绑定">×</button></li>`).join('')}
                 </ul>
+                <span class="avm-hint">更换密钥后可点“保存并同步插件”，查看并更新已关联的位置。</span>
             </div>` : ''}
             <div class="avm-form-actions">
                 ${p ? '<button type="button" class="avm-btn is-danger" data-act="delete"><i class="fa-solid fa-trash"></i>删除</button>' : ''}
                 <span class="avm-flex"></span>
                 <button type="button" class="avm-btn" data-act="back">取消</button>
+                <button type="button" class="avm-btn" data-act="save-bound-sync">保存并同步插件</button>
                 <button type="submit" class="avm-btn is-primary"><i class="fa-solid fa-check"></i>保存</button>
             </div>
         </form>`;
@@ -346,7 +357,7 @@ function settingsView() {
             ${row('autoFillBound', '自动填入已绑定的配置', '框是空的、之前在这里用过某个配置时，一点进去就自动填好')}
             ${row('capture', '发现新密钥时提示保存', '在插件里手动粘贴了管理器没有的密钥，弹个提示，点一下就存起来')}
             ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
-            ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
+            ${row('autoSync', '改动自动同步回去', '保存时更新已关联的酒馆密钥、代理预设和插件设置。关闭后仍可使用“同步插件”。未确认的旧绑定可在同步页确认一次。')}
             <label class="avm-switch-row">
                 <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
                 <input type="checkbox" class="avm-switch" data-opt="fab" ${fabEnabled() ? 'checked' : ''}>
@@ -360,6 +371,29 @@ function settingsView() {
         </div>`;
 }
 
+function boundSyncView() {
+    const s = boundSyncState;
+    const p = s && store.get(s.profileId);
+    if (!p) return '<div class="avm-empty">配置已不存在</div>';
+    const rows = s.targets.map(t => `<label class="avm-import-row">
+        <input type="checkbox" data-sync-target="${esc(t.id)}" ${s.picked.has(t.id) ? 'checked' : ''} ${s.busy || t.disabled ? 'disabled' : ''}>
+        <span class="avm-row-text"><span class="avm-row-name">${esc(t.label || t.source || t.path)}
+            <span class="avm-badge">${t.dom ? '输入框' : t.confirmed ? '已关联' : '待确认关联'}</span></span>
+            <span class="avm-row-sub">${esc(t.dom ? t.reason || '更新当前页面中的对应输入框' : `${t.source} · ${t.path}`)}</span></span>
+    </label>`).join('');
+    const result = s.result ? `<div class="avm-note" data-role="bound-sync-result" role="status"><div>
+        ${Object.entries({ updated: '已更新保存位置', unchanged: '保存值已是最新', skipped: '已跳过', failed: '更新失败' }).map(([kind, title]) =>
+            s.result[kind].length ? `<p><b>${title}：${s.result[kind].length}</b></p><ul>${s.result[kind].map(r => `<li>${esc(r.label || r.source || r.path || r.id)}${r.reason ? `：${esc(r.reason)}` : ''}</li>`).join('')}</ul>` : '').join('')}
+        ${s.result.fields ? `<p>输入框更新 ${s.result.fields.updated.length} 项，已一致 ${s.result.fields.unchanged.length} 项；这些操作仍遵循插件自己的保存方式。</p>
+            ${[...s.result.fields.skipped, ...s.result.fields.missing].map(r => `<p>${esc(r.scope || r.label || '输入框')}：${esc(r.reason || '输入框未打开，可通过上面的已关联保存位置同步')}</p>`).join('')}` : ''}
+    </div></div>` : '';
+    return `<div class="avm-subhead"><button type="button" class="avm-icon-btn" data-act="back" aria-label="返回列表">←</button><h3>同步插件 · ${esc(p.name)}</h3></div>
+        <p class="avm-hint">将此配置当前的地址和密钥同步到勾选的位置。待确认项需选择一次，以后会记住关联；模型保持不变。</p>
+        ${result}<div class="avm-import-list">${rows || '<p class="avm-hint">暂未找到关联位置。请先用小钥匙填写并在插件内保存，再回来刷新。</p>'}</div>
+        <div class="avm-form-actions"><button type="button" class="avm-btn" data-act="refresh-bound-sync" ${s.busy ? 'disabled' : ''}>刷新列表</button>
+        <span class="avm-flex"></span><button type="button" class="avm-btn is-primary" data-act="sync-bound-selected" ${s.busy || s.result || !s.picked.size ? 'disabled' : ''}>${s.busy ? '同步中…' : '同步选中位置'}</button></div>`;
+}
+
 export function render({ force = false } = {}) {
     if (!root?.classList.contains('is-open')) return;
     const body = root.querySelector('.avm-body');
@@ -368,7 +402,7 @@ export function render({ force = false } = {}) {
     const focused = document.activeElement;
     const keepQuery = focused?.dataset?.role === 'query';
     const caret = keepQuery ? focused.selectionStart : 0;
-    body.innerHTML = { list: listView, edit: editView, import: importView, settings: settingsView }[view]();
+    body.innerHTML = { list: listView, edit: editView, import: importView, settings: settingsView, 'bound-sync': boundSyncView }[view]();
     root.querySelectorAll('[data-view-btn]').forEach(b => b.classList.toggle('is-on', b.dataset.viewBtn === view));
     if (keepQuery) {
         const q = body.querySelector('[data-role="query"]');
@@ -387,6 +421,45 @@ function go(next, id = null) {
     probeState = null;
     render({ force: true });
     root.querySelector('.avm-body').scrollTop = 0;
+}
+
+function openBoundSync(profileId, bindingFp = null) {
+    resolveFillIntents(profileId);
+    const targets = listBoundSyncTargets(profileId);
+    const binding = bindingFp && store.binding(bindingFp);
+    const related = targets.filter(t => t.ref.bindingFps?.includes(bindingFp));
+    const group = bindingFp ? new Set([bindingFp, ...(binding?.partnerFp ? [binding.partnerFp] : []), ...related.flatMap(t => t.ref.bindingFps || [])]) : null;
+    const fields = store.bindingsFor(profileId).filter(([fp]) => !['#openai_reverse_proxy', '#openai_proxy_access_key'].includes(fp))
+        .filter(([fp]) => !group || group.has(fp))
+        .map(([fp, b]) => ({ id: `dom:${fp}`, dom: true, confirmed: b.guardVersion === 1, disabled: b.guardVersion !== 1,
+            label: b.alias || `${b.scope || '页面'} · ${b.label || KIND_LABEL[b.kind]}`, reason: b.guardVersion === 1 ? '' : '旧记录缺少校验信息，请重新用小钥匙选择一次' }));
+    const chosen = bindingFp ? related.filter(t => t.confirmed) : targets.filter(t => t.confirmed);
+    boundSyncState = { profileId, bindingFp, bindingFps: group ? [...group] : [], targets: [...targets, ...fields],
+        picked: new Set([...chosen, ...fields.filter(t => t.confirmed)].map(t => t.id)), busy: false, result: null };
+    go('bound-sync');
+    return chosen.length;
+}
+
+async function runBoundSync() {
+    const s = boundSyncState;
+    if (!s || s.busy || !s.picked.size) return;
+    s.busy = true;
+    render();
+    try {
+        if (s.bindingFps.some(fp => store.binding(fp)?.profileId !== s.profileId)) {
+            throw new Error('绑定位置已变化，请重新打开同步列表');
+        }
+        const selected = [...s.picked];
+        const fields = await syncBoundFields(s.profileId, selected.filter(id => id.startsWith('dom:')).map(id => id.slice(4)));
+        // Allow reactive input listeners to commit before checking saved values.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        s.result = { ...await syncBoundExtensions(s.profileId, selected.filter(id => !id.startsWith('dom:')), { bindingFps: s.bindingFps }), fields };
+    } catch (err) {
+        s.result = { updated: [], unchanged: [], skipped: [], failed: [{ label: '同步未完成', reason: err.message || String(err) }] };
+    } finally {
+        s.busy = false;
+        if (boundSyncState === s && view === 'bound-sync') render();
+    }
 }
 
 async function startImport() {
@@ -418,7 +491,7 @@ function readForm(form) {
     };
 }
 
-async function saveForm(form) {
+async function saveForm(form, { syncPlugins = false, bindingFp = null } = {}) {
     const data = readForm(form);
     const savingId = editId;
     const existing = editId && store.get(editId);
@@ -436,7 +509,17 @@ async function saveForm(form) {
     // A name typed by the user is never replaced by names found later in ST or extensions.
     const typedName = !!data.name && data.name !== existing?.name;
     if (typedName || !data.name) data.nameAuto = !data.name;
+    if (existing) {
+        resolveFillIntents(existing.id);
+        rememberSyncBaseline(existing);
+    }
     const p = store.upsert({ ...data, id: editId || undefined });
+    if (syncPlugins) {
+        const confirmed = openBoundSync(p.id, bindingFp);
+        if (bindingFp && confirmed) return runBoundSync();
+        if (bindingFp) toastr.info('第一次同步，请勾选这个位置对应的插件设置。确认后会记住，下次可直接同步。', TITLE);
+        return;
+    }
     go('list');
 
     let pushed = [];
@@ -479,17 +562,36 @@ function testedDraftMatches(form) {
     return probeState?.ok && probeState.signature === probeSignature(form) && probeState.key === editorDraft(form).key;
 }
 
+// Keep suggestions in the page: native datalist filtering and touch UI differ by browser.
+// Opening starts with every model, regardless of the value already saved in the field.
+function showModelOptions(open, filter = '') {
+    const list = root.querySelector('#avm_model_options');
+    if (!list) return;
+    const models = probeState ? (probeState.models || []) : (store.get(editId)?.models || []);
+    const input = root.querySelector('[name="model"]');
+    const button = root.querySelector('[data-act="toggle-models"]');
+    list.hidden = !open || !models.length;
+    list.dataset.filter = filter;
+    button.disabled = !models.length;
+    button.setAttribute('aria-expanded', String(!list.hidden));
+    input.placeholder = models.length ? `从 ${models.length} 个模型里选，或直接输入` : 'gpt-4o / claude-…';
+    if (list.hidden) return;
+    const needle = filter.trim().toLocaleLowerCase();
+    const matches = models.filter(m => m.toLocaleLowerCase().includes(needle));
+    list.innerHTML = matches.length
+        ? matches.map(m => `<button type="button" class="avm-model-option" data-act="select-model" data-model="${esc(m)}" aria-pressed="${m === input.value}">${esc(m)}</button>`).join('')
+        : '<span class="avm-hint">没有匹配的模型，也可以直接保存输入的名称。</span>';
+    list.scrollTop = 0;
+}
+
 /** Re-renders only the test block and the model suggestions, leaving typed form values alone. */
 function refreshTest() {
     const box = root.querySelector('.avm-test');
     if (!box || view !== 'edit') return;
     const p = editId ? store.get(editId) : null;
     box.outerHTML = testSection(p);
-    const models = probeState ? (probeState.models || []) : (p?.models || []);
-    const list = root.querySelector('#avm_models_datalist');
-    if (list) list.innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
-    const input = root.querySelector('[name="model"]');
-    if (input && models.length) input.placeholder = `从 ${models.length} 个模型里选，或直接输入`;
+    const list = root.querySelector('#avm_model_options');
+    showModelOptions(list && !list.hidden, list?.dataset.filter || '');
 }
 
 async function runEditorProbe(form) {
@@ -511,9 +613,6 @@ async function runEditorProbe(form) {
         const health = { ok: true, ms: r.ms, at: Date.now(), count: r.models.length, base: r.base };
         const text = `有效 · ${r.ms}ms · ${r.models.length} 个模型${r.via ? `（${r.via}）` : ''}${r.base && r.base !== normalizeUrl(draft.url) ? ` · 实际地址 ${r.base}` : ''}`;
         probeState = { busy: false, ok: true, text, models: r.models, health, signature, key: editorDraft(form).key };
-        // Suggest the first model when none is set, so the model box is not left empty.
-        const modelInput = form.querySelector('[name="model"]');
-        if (modelInput && !modelInput.value.trim() && r.models.length) modelInput.value = r.models[0];
     } catch (err) {
         if (!isCurrent()) return;
         if (err.stale) return invalidateEditorTest();
@@ -540,6 +639,10 @@ async function runCardTest(p) {
 }
 
 async function onClick(e) {
+    if (view === 'edit') {
+        if (e.target.name === 'model' && root.querySelector('#avm_model_options')?.hidden) showModelOptions(true);
+        else if (!e.target.closest('.avm-model-picker')) showModelOptions(false);
+    }
     const tagBtn = e.target.closest('[data-tag]');
     if (tagBtn) {
         tag = tagBtn.dataset.tag;
@@ -556,9 +659,38 @@ async function onClick(e) {
     const form = root.querySelector('[data-role="editor"]');
 
     switch (el.dataset.act) {
+        case 'toggle-models': return showModelOptions(root.querySelector('#avm_model_options').hidden);
+        case 'select-model': {
+            const input = form.querySelector('[name="model"]');
+            input.value = el.dataset.model;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            showModelOptions(false);
+            input.focus({ preventScroll: true });
+            return;
+        }
         case 'close': return closePanel();
         case 'new': return go('edit', null);
         case 'edit': return go('edit', id);
+        case 'bound-sync': return p && openBoundSync(p.id);
+        case 'save-bound-sync': return form && saveForm(form, { syncPlugins: true });
+        case 'refresh-bound-sync': return boundSyncState && !boundSyncState.busy && openBoundSync(boundSyncState.profileId, boundSyncState.bindingFp);
+        case 'sync-bound-selected': return runBoundSync();
+        case 'locate-binding': {
+            const fp = el.closest('[data-binding-fp]')?.dataset.bindingFp;
+            closePanel();
+            const result = await locateBoundField(fp);
+            if (!result.ok) { openPanel(); toastr.warning(result.reason, TITLE); }
+            return;
+        }
+        case 'rename-binding': {
+            const row = el.closest('[data-binding-fp]');
+            row.querySelector('[data-act="locate-binding"]').hidden = true;
+            const input = row.querySelector('[data-binding-alias]');
+            input.hidden = false; input.focus(); input.select();
+            return;
+        }
+        case 'sync-binding': return form && saveForm(form, { syncPlugins: true, bindingFp: el.closest('[data-binding-fp]')?.dataset.bindingFp });
         case 'back': return go('list');
         case 'import': return startImport();
         case 'copy-url': return p && copy(p.url, '地址');
@@ -681,6 +813,8 @@ function onInput(e) {
     if (e.target.dataset.role === 'query') {
         query = e.target.value;
         if (!e.isComposing && !queryComposing) render();
+    } else if (view === 'edit' && e.target.name === 'model') {
+        showModelOptions(true, e.target.value);
     } else if (view === 'edit' && ['url', 'key'].includes(e.target.name)) {
         invalidateEditorTest();
     }
@@ -688,6 +822,19 @@ function onInput(e) {
 
 function onChange(e) {
     const t = e.target;
+    if (t.dataset.bindingAlias !== undefined) {
+        const fp = t.dataset.bindingAlias, b = store.binding(fp);
+        if (b) store.bind(fp, { ...b, alias: t.value.trim().slice(0, 48) });
+        const link = t.closest('[data-binding-fp]').querySelector('[data-act="locate-binding"]');
+        link.textContent = t.value.trim() || `${b?.scope || '页面'} · ${b?.label || ''}`;
+        t.hidden = true; link.hidden = false;
+        return;
+    }
+    if (t.dataset.syncTarget !== undefined && boundSyncState && !boundSyncState.busy) {
+        if (t.checked) boundSyncState.picked.add(t.dataset.syncTarget);
+        else boundSyncState.picked.delete(t.dataset.syncTarget);
+        render();
+    }
     if (view === 'edit' && ['url', 'key', 'syncTarget'].includes(t.name)) invalidateEditorTest();
     if (t.dataset.opt) store.setOption(t.dataset.opt, t.checked);
     if (t.dataset.pick !== undefined && importState) {
@@ -814,9 +961,25 @@ export function initPanel(context) {
         saveForm(e.target).catch(err => console.error('[API Vault]', err));
     });
     root.addEventListener('keydown', e => {
+        if (e.target.dataset.bindingAlias !== undefined && (e.key === 'Enter' || e.key === 'Escape')) {
+            e.preventDefault(); e.stopPropagation();
+            if (e.key === 'Escape') e.target.value = store.binding(e.target.dataset.bindingAlias)?.alias || '';
+            onChange({ target: e.target });
+            return;
+        }
+        if (e.key === 'ArrowDown' && e.target.name === 'model') {
+            e.preventDefault();
+            if (root.querySelector('#avm_model_options').hidden) showModelOptions(true);
+            root.querySelector('.avm-model-option')?.focus();
+        }
         if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
+            if (view === 'edit' && !root.querySelector('#avm_model_options')?.hidden) {
+                showModelOptions(false);
+                root.querySelector('[name="model"]')?.focus({ preventScroll: true });
+                return;
+            }
             if (view !== 'list') go('list');
             else closePanel();
         }
