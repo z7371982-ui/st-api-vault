@@ -258,8 +258,7 @@ function editView() {
                     <div class="avm-combo" data-role="model-combo">
                         <input name="model" type="text" value="${esc(v.model)}" placeholder="${modelPlaceholder(models)}" spellcheck="false" autocomplete="off" aria-label="模型">
                         <button type="button" class="avm-combo-btn" data-act="model-clear" title="清空" aria-label="清空模型" ${v.model ? '' : 'hidden'}><i class="fa-solid fa-xmark"></i></button>
-                        <button type="button" class="avm-combo-btn" data-act="model-toggle" title="展开模型列表" aria-label="展开模型列表" ${models.length ? '' : 'hidden'}><i class="fa-solid fa-chevron-down"></i></button>
-                        <ul class="avm-combo-menu" role="listbox" hidden></ul>
+                        <button type="button" class="avm-combo-btn" data-act="model-toggle" title="打开模型列表" aria-label="打开模型列表" ${models.length ? '' : 'hidden'}><i class="fa-solid fa-chevron-down"></i></button>
                     </div>
                 </div>
                 <label class="avm-label">标签
@@ -379,6 +378,7 @@ export function render({ force = false } = {}) {
 // ---------- actions ----------
 
 function go(next, id = null) {
+    closeModelMenu();
     editorEpoch++;
     queryComposing = false;
     view = next;
@@ -502,8 +502,8 @@ function refreshTest() {
     if (input) input.placeholder = modelPlaceholder(models);
     const toggle = root.querySelector('[data-act="model-toggle"]');
     if (toggle) toggle.hidden = !models.length;
-    // A menu left open from before the test now shows the fresh list.
-    if (!root.querySelector('.avm-combo-menu')?.hidden) openModelMenu();
+    // A list left open from before the test now shows the fresh models.
+    if (modelSheetOpen()) openModelMenu();
 }
 
 // ---------- model picker ----------
@@ -520,31 +520,73 @@ function modelPlaceholder(models) {
     return models.length ? `点右侧箭头，从 ${models.length} 个模型里选` : '先点上面的「连接」获取模型，或直接输入';
 }
 
-let modelFilter = '';
+// The list is its own layer over the whole panel, not a dropdown under the box: a dropdown inside the
+// narrow form column overlapped the fields below and, with a translucent theme, let them show through.
+let modelSheet = null;
+
+const modelSheetOpen = () => !!modelSheet?.isConnected;
+
+/** The panel's own background color with its transparency dropped, so the list layer hides the form. */
+function opaqueBackground() {
+    for (const el of [root, document.body, document.documentElement]) {
+        const m = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/);
+        if (!m) continue;
+        const [r, g, b, a = '1'] = m[1].split(/[\s,/]+/).filter(Boolean);
+        if (Number(a) > 0) return `rgb(${r}, ${g}, ${b})`;
+    }
+    return '#1e1e22';
+}
+
+function ensureModelSheet() {
+    if (modelSheet) return modelSheet;
+    modelSheet = document.createElement('div');
+    modelSheet.className = 'avm-model-sheet';
+    modelSheet.setAttribute('role', 'dialog');
+    modelSheet.setAttribute('aria-label', '选择模型');
+    modelSheet.innerHTML = `
+        <div class="avm-subhead">
+            <button type="button" class="avm-icon-btn" data-act="model-close" aria-label="返回"><i class="fa-solid fa-arrow-left"></i></button>
+            <h3>选择模型</h3>
+            <span class="avm-model-count"></span>
+        </div>
+        <label class="avm-search">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input type="text" data-role="model-search" placeholder="搜索模型" autocomplete="off" spellcheck="false" aria-label="搜索模型">
+        </label>
+        <ul class="avm-model-list" role="listbox"></ul>`;
+    return modelSheet;
+}
+
+function renderModelList() {
+    if (!modelSheet) return;
+    const models = editorModels();
+    const q = modelSheet.querySelector('[data-role="model-search"]').value.trim().toLowerCase();
+    const shown = q ? models.filter(m => m.toLowerCase().includes(q)) : models;
+    const cur = root.querySelector('[name="model"]')?.value.trim() || '';
+    modelSheet.querySelector('.avm-model-count').textContent = q ? `${shown.length} / ${models.length}` : `${models.length} 个`;
+    modelSheet.querySelector('.avm-model-list').innerHTML = shown.length
+        ? shown.slice(0, 300).map(m => `<li role="option" data-model="${esc(m)}" aria-selected="${m === cur}" class="${m === cur ? 'is-on' : ''}">${esc(m)}</li>`).join('')
+            + (shown.length > 300 ? `<li class="avm-model-more">还有 ${shown.length - 300} 个，输入关键字筛选</li>` : '')
+        : '<li class="avm-model-more">没有匹配的模型</li>';
+}
 
 function openModelMenu() {
-    const menu = root.querySelector('.avm-combo-menu');
-    const input = root.querySelector('[name="model"]');
-    if (!menu || !input) return;
-    const models = editorModels();
-    if (!models.length) return closeModelMenu();
-    const q = modelFilter.toLowerCase();
-    const shown = q ? models.filter(m => m.toLowerCase().includes(q)) : models;
-    const cur = input.value.trim();
-    menu.innerHTML = shown.length
-        ? shown.slice(0, 300).map(m => `<li role="option" data-model="${esc(m)}" aria-selected="${m === cur}" class="${m === cur ? 'is-on' : ''}">${esc(m)}</li>`).join('')
-            + (shown.length > 300 ? `<li class="avm-combo-more">还有 ${shown.length - 300} 个，输入关键字筛选</li>` : '')
-        : '<li class="avm-combo-more">没有匹配的模型</li>';
-    menu.hidden = false;
-    root.querySelector('[data-act="model-toggle"]')?.classList.add('is-open');
-    menu.querySelector('.is-on')?.scrollIntoView({ block: 'nearest' });
+    if (!editorModels().length || !root.querySelector('[name="model"]')) return closeModelMenu();
+    ensureModelSheet();
+    if (!modelSheetOpen()) {
+        const search = modelSheet.querySelector('[data-role="model-search"]');
+        search.value = '';
+        modelSheet.style.backgroundColor = opaqueBackground();
+        root.append(modelSheet);
+        // On phones a focused search box would pop the keyboard over the list.
+        if (!isTouch()) search.focus({ preventScroll: true });
+    }
+    renderModelList();
+    modelSheet.querySelector('.is-on')?.scrollIntoView({ block: 'center' });
 }
 
 function closeModelMenu() {
-    const menu = root.querySelector('.avm-combo-menu');
-    if (menu) menu.hidden = true;
-    root.querySelector('[data-act="model-toggle"]')?.classList.remove('is-open');
-    modelFilter = '';
+    modelSheet?.remove();
 }
 
 function setModel(value) {
@@ -559,33 +601,65 @@ function setModel(value) {
 
 const syncLabel = { done: '已同步', same: '已是最新', absent: '插件没打开', nodata: '没有可同步的内容' };
 
+/**
+ * One fill writes the URL and the key box of the same window, which are two bindings.
+ * They are shown as one row: same plugin, same headings up to the field itself.
+ */
+function groupBindings(bindings) {
+    const groups = new Map();
+    for (const [fp, b] of bindings) {
+        const place = b.place || {};
+        const plugin = place.plugin || b.scope || '未知插件';
+        // The last path entry is the field's own label ("API 地址"); the rest is the window it sits in.
+        const where = place.path?.length ? place.path.slice(0, -1) : [];
+        const id = JSON.stringify([plugin, where]);
+        const g = groups.get(id) || { plugin, where, items: [] };
+        g.items.push([fp, b]);
+        groups.set(id, g);
+    }
+    return [...groups.values()];
+}
+
 function bindingsBlock(p) {
     const bindings = store.bindingsFor(p.id);
     if (!bindings.length) return '';
-    const row = ([fp, b]) => {
-        const status = bindingStatus(b, p);
-        // Recorded when the field was filled: which plugin, and the headings leading to the field.
-        const place = b.place || {};
-        const plugin = place.plugin || b.scope || '未知插件';
-        const path = (place.path?.length ? place.path : [b.label || KIND_LABEL[b.kind] || '']).filter(Boolean).join(' › ');
+    const row = g => {
+        const kinds = [...new Set(g.items.map(([, b]) => b.kind))].sort((a, b) => (a === 'url' ? -1 : b === 'url' ? 1 : 0));
+        const what = kinds.map(k => KIND_LABEL[k] || '').filter(Boolean).join(' + ');
+        const sub = [g.where.join(' › '), what].filter(Boolean).join(' · ');
+        // One stale field makes the whole row stale.
+        const states = g.items.map(([, b]) => bindingStatus(b, p));
+        const status = states.includes('stale') ? 'stale' : states.includes('ok') ? 'ok' : '';
         const badge = status === 'stale'
             ? '<span class="avm-badge is-warn" title="插件里还是旧的地址或密钥">待同步</span>'
             : status === 'ok' ? '<span class="avm-badge is-ok" title="和当前配置一致">最新</span>' : '';
-        const title = `${plugin}${path ? ` › ${path}` : ''}`;
-        return `<li data-fp="${esc(fp)}" title="${esc(title)}">
-            <span class="avm-binding-text"><b>${esc(plugin)}</b><small>${esc(path || KIND_LABEL[b.kind] || '')}</small></span>
+        const fps = esc(JSON.stringify(g.items.map(([fp]) => fp)));
+        const full = g.items.map(([, b]) => [g.plugin, ...(b.place?.path?.length ? b.place.path : [b.label || KIND_LABEL[b.kind] || ''])].filter(Boolean).join(' › ')).join('\n');
+        return `<li data-fps="${fps}" title="${esc(full)}">
+            <span class="avm-binding-text"><b>${esc(g.plugin)}</b><small>${esc(sub)}</small></span>
             ${badge}
-            <button type="button" class="avm-icon-btn" data-act="binding-sync" data-fp="${esc(fp)}" title="把当前地址 / 密钥写进这个输入框" aria-label="同步到这个输入框"><i class="fa-solid fa-rotate"></i></button>
-            <button type="button" class="avm-icon-btn" data-act="unbind" data-fp="${esc(fp)}" title="解除绑定" aria-label="解除绑定"><i class="fa-solid fa-xmark"></i></button>
+            <button type="button" class="avm-icon-btn" data-act="binding-sync" data-fps="${fps}" title="把当前${esc(what || '地址 / 密钥')}写进这些输入框" aria-label="同步到这些输入框"><i class="fa-solid fa-rotate"></i></button>
+            <button type="button" class="avm-icon-btn" data-act="unbind" data-fps="${fps}" title="解除绑定" aria-label="解除绑定"><i class="fa-solid fa-xmark"></i></button>
         </li>`;
     };
+    const rowsHtml = groupBindings(bindings).map(row).join('');
     const plugins = p.extRefs.length
         ? `<span class="avm-hint">存在 ${esc([...new Set(p.extRefs.map(r => r.source))].join('、'))} 设置里的副本，保存时会一起改。</span>` : '';
     return `<div class="avm-label">已绑定的输入框
-        <ul class="avm-bindings">${bindings.map(row).join('')}</ul>
+        <ul class="avm-bindings">${rowsHtml}</ul>
         <span class="avm-hint">改了密钥后点「保存」：插件设置里的副本立即更新，插件输入框下次点进去时自动换成新的。插件窗口开着时，也可以点 <i class="fa-solid fa-rotate"></i> 马上同步。</span>
         ${plugins}
     </div>`;
+}
+
+/** Fingerprints behind one bindings row (URL and key of the same window). */
+function rowFps(el) {
+    try {
+        const list = JSON.parse(el.dataset.fps || '[]');
+        return Array.isArray(list) ? list.filter(x => typeof x === 'string') : [];
+    } catch {
+        return [];
+    }
 }
 
 /** Re-renders the bindings block only, so unsaved form edits stay. */
@@ -649,7 +723,7 @@ async function onClick(e) {
         tag = tagBtn.dataset.tag;
         return render();
     }
-    const modelItem = e.target.closest('.avm-combo-menu [data-model]');
+    const modelItem = e.target.closest('.avm-model-list [data-model]');
     if (modelItem) {
         setModel(modelItem.dataset.model);
         return closeModelMenu();
@@ -727,27 +801,26 @@ async function onClick(e) {
         case 'probe': return form && runEditorProbe(form);
         case 'test': return p && !testing.has(p.id) && runCardTest(p);
         case 'unbind': {
-            store.unbind(el.dataset.fp);
+            for (const fp of rowFps(el)) store.unbind(fp);
             return refreshBindings();
         }
         case 'binding-sync': {
             if (form && editorDraft(form).key !== (store.get(editId)?.key || '')) {
                 return toastr.warning('密钥改了还没保存，先点「保存」再同步', TITLE);
             }
-            const r = await syncBinding(el.dataset.fp);
+            const results = [];
+            for (const fp of rowFps(el)) results.push(await syncBinding(fp));
+            // Report the most useful outcome of the row: anything written wins, then "already current".
+            const r = ['done', 'same', 'absent', 'nodata'].find(x => results.includes(x)) || '';
             toastr[r === 'done' || r === 'same' ? 'success' : 'info'](syncLabel[r] || '没有同步', TITLE, { timeOut: 1600 });
             return refreshBindings();
         }
-        case 'model-toggle': {
-            if (!root.querySelector('.avm-combo-menu')?.hidden) return closeModelMenu();
-            modelFilter = '';
-            return openModelMenu();
-        }
+        case 'model-toggle': return modelSheetOpen() ? closeModelMenu() : openModelMenu();
+        case 'model-close': return closeModelMenu();
         case 'model-clear': {
             setModel('');
-            root.querySelector('[name="model"]')?.focus();
-            modelFilter = '';
-            return openModelMenu();
+            root.querySelector('[name="model"]')?.focus({ preventScroll: true });
+            return;
         }
         case 'delete': {
             const cur = store.get(editId);
@@ -808,19 +881,13 @@ function onInput(e) {
         if (!e.isComposing && !queryComposing) render();
     } else if (view === 'edit' && ['url', 'key'].includes(e.target.name)) {
         invalidateEditorTest();
+    } else if (e.target.dataset.role === 'model-search') {
+        renderModelList();
     } else if (view === 'edit' && e.target.name === 'model') {
-        // Typing narrows the list; an empty box shows every model again.
+        // Typing a model by hand is allowed; the list is opened with the arrow.
         const clear = root.querySelector('[data-act="model-clear"]');
         if (clear) clear.hidden = !e.target.value;
-        modelFilter = e.target.value.trim();
-        if (editorModels().length) openModelMenu();
     }
-}
-
-/** A tap anywhere outside the model box closes its menu. */
-function onPanelPointerDown(e) {
-    const menu = root.querySelector('.avm-combo-menu');
-    if (menu && !menu.hidden && !e.target.closest('[data-role="model-combo"]')) closeModelMenu();
 }
 
 function onChange(e) {
@@ -936,11 +1003,6 @@ export function initPanel(context) {
 
     root.addEventListener('click', e => onClick(e).catch(err => console.error('[API Vault]', err)));
     root.addEventListener('input', onInput);
-    root.addEventListener('pointerdown', onPanelPointerDown);
-    // Keep focus in the model box while picking from its menu, so a tap is not lost to a blur.
-    root.addEventListener('mousedown', e => {
-        if (e.target.closest('.avm-combo-menu')) e.preventDefault();
-    });
     root.addEventListener('compositionstart', e => {
         if (e.target.dataset.role === 'query') queryComposing = true;
     });
@@ -959,7 +1021,8 @@ export function initPanel(context) {
         if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
-            if (view !== 'list') go('list');
+            if (modelSheetOpen()) closeModelMenu();
+            else if (view !== 'list') go('list');
             else closePanel();
         }
     });

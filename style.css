@@ -822,7 +822,8 @@
     color: var(--avm-fg);
 }
 
-.avm-bindings li > span {
+/* Only the text column grows; the status badge stays a small pill. */
+.avm-bindings li > .avm-binding-text {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -899,55 +900,80 @@
     transform: rotate(180deg);
 }
 
-.avm-combo-menu {
+/* Model list: its own opaque layer over the whole panel (background color set inline from the theme). */
+.avm-model-sheet {
     position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
+    top: 0;
     right: 0;
-    z-index: 5;
-    max-height: 260px;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    background: var(--SmartThemeChatTintColor, #1e1e22);
+    animation: avm-fade 0.15s ease-out;
+}
+
+.avm-model-sheet .avm-subhead {
     margin: 0;
-    padding: 4px;
+}
+
+.avm-model-count {
+    font-size: 0.8em;
+    color: var(--avm-muted);
+    white-space: nowrap;
+}
+
+.avm-model-list {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     list-style: none;
-    border: 1px solid var(--avm-line);
-    border-radius: 10px;
-    background: var(--SmartThemeChatTintColor, #222);
-    box-shadow: var(--avm-shadow);
 }
 
-.avm-combo-menu[hidden] {
-    display: none;
-}
-
-.avm-combo-menu li {
-    padding: 8px 10px;
-    border-radius: 7px;
-    font-size: 0.95em;
-    font-weight: 400;
+.avm-model-list li {
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.92em;
     color: var(--avm-fg);
     cursor: pointer;
     word-break: break-all;
 }
 
-.avm-combo-menu li:hover,
-.avm-combo-menu li.is-on {
+.avm-model-list li + li {
+    margin-top: 2px;
+}
+
+.avm-model-list li:hover,
+.avm-model-list li.is-on {
     background: var(--avm-accent-soft);
 }
 
-.avm-combo-menu .avm-combo-more {
+.avm-model-list li.is-on {
+    font-weight: 600;
+}
+
+.avm-model-list .avm-model-more {
     color: var(--avm-muted);
     cursor: default;
 }
 
-.avm-combo-menu .avm-combo-more:hover {
+.avm-model-list .avm-model-more:hover {
     background: transparent;
 }
 
 @media (max-width: 768px) {
-    .avm-combo-menu li {
-        padding: 12px 10px;
+    .avm-model-sheet {
+        padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    }
+
+    .avm-model-list li {
+        padding: 13px 12px;
     }
 }
 
