@@ -203,8 +203,8 @@ export function focusTarget() {
 // ---------- positioning ----------
 
 /**
- * The floating plugin window `el` sits in: its nearest position:fixed ancestor.
- * Keep ownership even when the window clips descendants; top-layer placement escapes that clipping.
+ * The floating plugin window `el` sits in: its nearest position:fixed ancestor. Null when there is none,
+ * or when that window would clip our fixed nodes (it is their containing block and hides overflow).
  */
 function floatingWindowOf(el) {
     // Walks up through shadow boundaries too: a Vue / Lit plugin's window usually lives in a shadow root.
@@ -212,9 +212,17 @@ function floatingWindowOf(el) {
     for (let n = up(el); n && n !== document.body && n !== document.documentElement; n = up(n)) {
         const cs = getComputedStyle(n);
         if (cs.position !== 'fixed') continue;
-        return n;
+        return containsFixed(n) && cs.overflow !== 'visible' ? null : n;
     }
     return null;
+}
+
+/** Whether `n` is the containing block of position:fixed descendants (transform, filter, contain, ...). */
+function containsFixed(n) {
+    const cs = getComputedStyle(n);
+    return cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none'
+        || (cs.backdropFilter && cs.backdropFilter !== 'none') || (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none')
+        || /transform|filter|perspective/.test(cs.willChange) || /paint|layout|strict|content/.test(cs.contain);
 }
 
 /**
@@ -248,21 +256,21 @@ function ensureStyles(host) {
     root.append(link);
 }
 
-/** Keep events inside the owner while escaping its clipping, without moving input focus. */
-function mount(node) {
-    const host = targetHost();
+/**
+ * @param {{sheet?: boolean}} [opts] The phone bottom sheet and its backdrop are laid out by CSS against the
+ *   screen; inside a transformed window they would be laid out against the window instead, so they stay on body.
+ */
+function mount(node, { sheet = false } = {}) {
+    let host = targetHost();
+    if (sheet && host !== document.body && host.tagName !== 'DIALOG' && containsFixed(host)) host = document.body;
     ensureStyles(host);
     if (node.parentNode !== host) host.append(node);
-    if (typeof node.showPopover === 'function') {
-        node.setAttribute('popover', 'manual');
-        if (!node.matches(':popover-open')) node.showPopover();
-    }
 }
 
 let originProbe = null;
 
 /**
- * Where (0, 0) of a fixed element inside `host` really lands. A transformed ancestor (some popups
+ * The bounds of the fixed containing block inside `host`. A transformed ancestor (some popups
  * animate with transform) moves it. Measured with a separate invisible probe, so the node itself is
  * never touched: resetting its `animation` to measure it restarted the entry animation on every
  * re-placement, which showed up as the button flashing several times.
@@ -271,7 +279,7 @@ function fixedOrigin(host) {
     if (!originProbe) {
         originProbe = document.createElement('div');
         originProbe.className = 'avm-root';
-        originProbe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;animation:none;transition:none';
+        originProbe.style.cssText = 'position:fixed;left:0;top:0;bottom:0;width:0;height:auto;visibility:hidden;pointer-events:none;animation:none;transition:none';
     }
     host.append(originProbe);
     const r = originProbe.getBoundingClientRect();
@@ -280,7 +288,7 @@ function fixedOrigin(host) {
 }
 
 function placeFixed(node, left, top) {
-    const o = node.hasAttribute('popover') ? { left: 0, top: 0 } : fixedOrigin(node.parentNode || document.body);
+    const o = fixedOrigin(node.parentNode || document.body);
     const x = `${Math.round(left - o.left)}px`;
     const y = `${Math.round(top - o.top)}px`;
     if (node.style.left !== x) node.style.left = x;
@@ -335,11 +343,10 @@ function ensurePill() {
 }
 
 /**
- * On phones follow the focused field, since its partner may have scrolled above the keyboard.
- * On desktop a pair shares the button on its URL field.
+ * Field the pill and picker sit next to. A pick fills the URL and key together, so for a pair
+ * the button lives on the URL field (the top of the group), whichever of the two was clicked.
  */
 function anchorEl() {
-    if (isCompact()) return target?.el;
     const a = target?.anchor;
     return a?.isConnected && defaultVisible(a) ? a : target?.el;
 }
@@ -364,8 +371,8 @@ function updatePill() {
     node.classList.toggle('is-bound', !!bound);
     node.classList.toggle('is-open', !!pop?.isConnected);
     // Only rewrite when it changed; re-placing runs several times while a popup settles.
-    // Inline geometry also works inside shadow roots and when the host's icon font is unavailable.
-    const html = `<svg class="avm-key-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-4-4 3-3m-6 0 3-3"/></svg>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
+    // A host's Font Awesome rules do not cross a shadow root boundary.
+    const html = `<svg class="avm-key-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="7.5" cy="7.5" r="4.5"></circle><path d="M11 11l9 9m-3-3 3-3m-6 0 3-3"></path></svg>${bound ? `<span>${esc(bound.name)}</span>` : ''}`;
     if (node.innerHTML !== html) node.innerHTML = html;
     mount(node);
     const w = node.offsetWidth;
@@ -500,18 +507,28 @@ function updatePopLayout() {
             // Close on click, not on pointerdown, so the tap does not land on the page underneath.
             backdrop.addEventListener('click', () => closePop(false));
         }
-        mount(backdrop);
+        mount(backdrop, { sheet });
     } else {
         backdrop?.remove();
     }
-    mount(pop);
+    mount(pop, { sheet });
     return sheet;
 }
 
 function placePop() {
     const t = currentTarget();
     if (!t) return closePop(false);
-    if (updatePopLayout()) return; // The bottom sheet is placed by CSS.
+    if (updatePopLayout()) {
+        // ST's mobile body is fixed; its transformed HTML can have zero height.
+        // Convert that containing block's bottom to the viewport bottom, while
+        // leaving CSS in charge of content height, keyboard inset and animation.
+        const bounds = fixedOrigin(pop.parentNode);
+        pop.style.setProperty('--avm-sheet-left', `${-bounds.left}px`);
+        pop.style.setProperty('--avm-sheet-bottom', `${bounds.bottom - innerHeight}px`);
+        // An inset:0 backdrop would collapse against that same zero-height root.
+        placeFixed(backdrop, 0, 0);
+        return;
+    }
     const rect = anchorEl().getBoundingClientRect();
     const width = Math.min(340, innerWidth - 16);
     pop.style.width = `${width}px`;
@@ -533,11 +550,13 @@ function openPop() {
     input.value = '';
     renderPopList();
     placePop();
-    if (!sheet) {
+    if (sheet) {
+        // Drop the keyboard so the whole list is visible; the field stays the fill target.
+        // Searching is one tap away in the sheet.
+        t.el.blur();
+    } else {
         input.focus({ preventScroll: true });
     }
-    // On phones, keep input focus: blur can make the host redraw/close and lose the fill target.
-    // The existing visual-viewport sizing keeps the picker above an open keyboard.
     updatePill();
 }
 
