@@ -511,6 +511,9 @@ async function runEditorProbe(form) {
         const health = { ok: true, ms: r.ms, at: Date.now(), count: r.models.length, base: r.base };
         const text = `有效 · ${r.ms}ms · ${r.models.length} 个模型${r.via ? `（${r.via}）` : ''}${r.base && r.base !== normalizeUrl(draft.url) ? ` · 实际地址 ${r.base}` : ''}`;
         probeState = { busy: false, ok: true, text, models: r.models, health, signature, key: editorDraft(form).key };
+        // Suggest the first model when none is set, so the model box is not left empty.
+        const modelInput = form.querySelector('[name="model"]');
+        if (modelInput && !modelInput.value.trim() && r.models.length) modelInput.value = r.models[0];
     } catch (err) {
         if (!isCurrent()) return;
         if (err.stale) return invalidateEditorTest();
