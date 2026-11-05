@@ -39,6 +39,25 @@
 
 /* ---------- side panel ---------- */
 
+.avm-panel-layer {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    overflow: visible;
+    pointer-events: none;
+}
+
+.avm-panel-layer::backdrop { background: transparent; }
+.avm-panel-layer > .avm-panel,
+.avm-panel-layer > .avm-panel-backdrop { pointer-events: auto; }
+
 .avm-panel {
     position: fixed;
     top: 0;

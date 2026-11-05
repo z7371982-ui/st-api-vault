@@ -7,7 +7,7 @@ import { store } from './store.js';
 import { st } from './st.js';
 import { proxy } from './proxy.js';
 import { scanExtensionSettings, readAt, writeAt } from './scan.js';
-import { hashKey, findProfileByKey, findProfileByPair, maskMatches, extRefId, proxyHash, normalizeUrl } from './vault.js';
+import { hashKey, findProfileByPair, maskMatches, extRefId, proxyHash, urlIdentity, sameUrl } from './vault.js';
 
 const ST_SOURCE = '酒馆';
 const PROXY_SOURCE = '反向代理';
@@ -48,10 +48,16 @@ async function linkNewProxy(p) {
 
 /** Raw key for a profile, fetched from ST (and cached) when only a masked copy is known. */
 export async function resolveKey(profile) {
-    const p = store.get(profile.id) || profile;
+    const saved = store.get(profile.id);
+    const p = saved || profile;
     if (p.key) return p.key;
     if (!p.stRef || p.stMissing) return '';
+    const identity = () => JSON.stringify([p.url, p.key, p.stRef, p.stMissing]);
+    const before = identity();
     const value = await st.find(p.stRef.key, p.stRef.id);
+    if ((saved && store.get(p.id) !== saved) || identity() !== before) {
+        throw new Error('读取密钥期间配置已变化，请重新选择配置');
+    }
     if (value && !value.includes('*')) {
         if (store.get(p.id)) store.upsert({ id: p.id, key: value, syncedHash: hashKey(value) });
         return value;
@@ -63,8 +69,9 @@ function matchExisting(candidate, raw) {
     const { key, id } = candidate.stRef;
     return store.profiles.find(p => p.stRef?.key === key && p.stRef?.id === id)
         || (raw
-            ? findProfileByKey(store.profiles, raw)
-            : store.profiles.find(p => !p.stRef && (!p.syncTarget || p.syncTarget === key) && maskMatches(p.key, candidate.keyHint)))
+            ? findProfileByPair(store.profiles, raw, candidate.url)
+            : store.profiles.find(p => !p.stRef && (!p.syncTarget || p.syncTarget === key)
+                && (!p.url || !candidate.url || sameUrl(p.url, candidate.url)) && maskMatches(p.key, candidate.keyHint)))
         || null;
 }
 
@@ -153,7 +160,7 @@ export async function collectCandidates() {
     try {
         for (const s of scanExtensionSettings(ctx.extensionSettings)) {
             items.push({
-                ref: `ext:${s.source}:${hashKey(`${s.key}\n${normalizeUrl(s.url).toLowerCase()}`)}`,
+                ref: `ext:${s.source}:${hashKey(`${s.key}\n${urlIdentity(s.url)}`)}`,
                 source: s.source,
                 provider: s.source,
                 name: s.name,
@@ -182,7 +189,10 @@ export function importItems(items) {
 
     for (const it of items) {
         seen.add(it.ref);
-        const p = it.existing && store.get(it.existing.id);
+        // Earlier items in this same batch may already have created or completed a profile.
+        const p = (it.stRef && matchExisting(it, it.key))
+            || (it.proxyRef && store.profiles.find(p => p.proxyRef?.name === it.proxyRef.name || p.proxyRef?.hash === it.proxyRef.hash))
+            || findProfileByPair(store.profiles, it.key, it.url);
         if (p) {
             const patch = { id: p.id };
             if (it.stRef && (!p.stRef || p.stMissing)) {
@@ -196,7 +206,7 @@ export function importItems(items) {
                 patch.proxyMissing = false;
             }
             const refs = mergeExtRefs(p.extRefs, it.extRefs || []);
-            if (refs.length !== p.extRefs.length) patch.extRefs = refs;
+            if (JSON.stringify(refs) !== JSON.stringify(p.extRefs)) patch.extRefs = refs;
             if (!p.key && it.key) patch.key = it.key;
             if (!p.keyHint && it.keyHint) patch.keyHint = it.keyHint;
             if (!p.url && it.url) patch.url = it.url;
@@ -306,13 +316,27 @@ async function reconcileProxies() {
         const hash = proxyHash(pr.url, pr.password);
         // Vault edits update the stored hash when they are pushed, so a mismatch means ST changed it.
         if (hash !== p.proxyRef.hash) {
+            if (p.url !== pr.url || p.key !== pr.password) {
+                p.health = null;
+                p.models = [];
+                p.modelsAt = 0;
+            }
             p.url = pr.url;
-            if (pr.password) p.key = pr.password;
+            p.key = pr.password;
             p.proxyRef = { name: pr.name, hash };
             changed = true;
         }
     }
     return changed;
+}
+
+/** A linked setting is writable only while both credentials still match its baseline. */
+function extensionRefMatches(p, r) {
+    const value = readAt(ctx.extensionSettings, r.segs, r.keyProp);
+    if (typeof value !== 'string' || (hashKey(value.trim()) !== r.hash && value.trim() !== p.key)) return false;
+    if (!r.urlProp) return true;
+    const url = readAt(ctx.extensionSettings, r.segs, r.urlProp);
+    return typeof url === 'string' && urlIdentity(url) === urlIdentity(r.urlSeen ?? p.url);
 }
 
 /**
@@ -340,12 +364,18 @@ export async function reconcile() {
             if (!s) {
                 if (!p.stMissing) {
                     p.stMissing = true;
+                    p.health = null;
+                    p.models = [];
+                    p.modelsAt = 0;
                     changed = true;
                 }
                 continue;
             }
             if (p.stMissing) {
                 p.stMissing = false;
+                p.health = null;
+                p.models = [];
+                p.modelsAt = 0;
                 changed = true;
             }
             // Renamed in ST's own key manager: adopt the new label as the profile name.
@@ -369,12 +399,13 @@ export async function reconcile() {
     for (const p of store.profiles) {
         if (!p.extRefs.length) continue;
         const kept = p.extRefs.filter(r => {
-            const v = readAt(ctx.extensionSettings, r.segs, r.keyProp);
-            // Path gone, or the extension now holds a different key it got elsewhere: unlink.
-            // A brand-new key there is picked up by the next import as its own profile.
-            if (typeof v !== 'string') return false;
-            const h = hashKey(v.trim());
-            return h === r.hash || (p.key && v.trim() === p.key);
+            // External URL/key edits detach the old link instead of being overwritten later.
+            if (!extensionRefMatches(p, r)) return false;
+            if (r.urlProp && r.urlSeen === undefined) {
+                r.urlSeen = readAt(ctx.extensionSettings, r.segs, r.urlProp);
+                changed = true;
+            }
+            return true;
         });
         for (const r of kept) {
             if (!r.nameProp) continue;
@@ -414,6 +445,8 @@ function pushToExtensions(p) {
         return typeof cur === 'string' && cur.trim() !== value && writeAt(ctx.extensionSettings, r.segs, prop, value);
     };
     let n = 0;
+    // Recheck after async ST/proxy writes, which may have allowed another extension to edit settings.
+    p.extRefs = p.extRefs.filter(r => extensionRefMatches(p, r));
     for (const r of p.extRefs) {
         if (typeof readAt(ctx.extensionSettings, r.segs, r.keyProp) !== 'string') continue;
         let touched = set(r, r.keyProp, p.key);
@@ -424,6 +457,7 @@ function pushToExtensions(p) {
             touched = true;
         }
         r.hash = hash;
+        if (r.urlProp) r.urlSeen = readAt(ctx.extensionSettings, r.segs, r.urlProp);
         if (touched) n++;
     }
     if (n) ctx.saveSettingsDebounced();
@@ -433,10 +467,15 @@ function pushToExtensions(p) {
 /** Writes URL, password and name back into the linked ST proxy preset. */
 async function pushToProxy(p) {
     if (!p.proxyRef || p.proxyMissing) return false;
+    const current = (await proxy.list()).find(pr => pr.name === p.proxyRef.name);
+    if (!current) throw new Error('关联的代理预设已不存在，请刷新酒馆页面后再应用');
+    if (proxyHash(current.url, current.password) !== p.proxyRef.hash) {
+        throw new Error('酒馆里的代理地址或密钥已经变化，请刷新酒馆页面并确认最新配置后再应用');
+    }
     const hash = proxyHash(p.url, p.key);
     if (hash === p.proxyRef.hash && p.name === p.proxyRef.name) return false;
     const r = await proxy.update(p.proxyRef.name, { name: p.name, url: p.url, password: p.key });
-    if (!r) return false;
+    if (!r) throw new Error('无法更新关联的代理预设，配置尚未应用');
     p.proxyRef = { name: r.name, hash: proxyHash(r.url, r.password) };
     return true;
 }
@@ -527,14 +566,15 @@ export async function syncToST(profile, target) {
             if (!(await linkNewProxy(live || p))) throw new Error('没能在酒馆里创建代理预设，先打开一次 API 连接面板');
             store.save();
         }
-        const ref = (store.get(p.id) || p).proxyRef;
+        // Explicit application must use the current profile even when automatic sync is off.
+        if (await pushToProxy(p)) store.save();
         st.ensureProxySource();
-        if (!(await proxy.select(ref.name))) throw new Error('酒馆的代理预设下拉框还没加载，先打开一次 API 连接面板');
+        if (!(await proxy.select(p.proxyRef.name))) throw new Error('酒馆的代理预设下拉框还没加载，先打开一次 API 连接面板');
         // Switching the preset only changes URL + password; the model dropdown has to be set too.
         if (p.model) st.applyModel(p.model);
         store.touch(p.id);
         await reconcile();
-        return `代理预设「${ref.name}」`;
+        return `代理预设「${p.proxyRef.name}」`;
     }
 
     const slot = slotTarget;

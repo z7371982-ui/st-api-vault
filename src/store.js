@@ -49,7 +49,13 @@ export const store = {
 
     upsert(data) {
         const existing = data.id ? this.get(data.id) : null;
-        const profile = createProfile({ ...existing, ...data, updatedAt: Date.now() });
+        const changed = existing && (
+            ['url', 'key', 'stMissing'].some(k => k in data && data[k] !== existing[k])
+            || ('stRef' in data && JSON.stringify(data.stRef) !== JSON.stringify(existing.stRef))
+        );
+        // Credential edits invalidate cached tests; a newly tested draft may supply fresh results.
+        const reset = changed ? { health: null, models: [], modelsAt: 0 } : {};
+        const profile = createProfile({ ...existing, ...reset, ...data, updatedAt: Date.now() });
         if (existing) Object.assign(existing, profile);
         else this.profiles.push(profile);
         this.save();
@@ -83,9 +89,7 @@ export const store = {
     markSynced(id, stRef) {
         const p = this.get(id);
         if (!p) return;
-        p.stRef = stRef;
-        p.syncedHash = hashKey(p.key);
-        this.save();
+        this.upsert({ id, stRef, syncedHash: hashKey(p.key) });
     },
 
     isOutOfSync(p) {

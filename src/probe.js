@@ -1,5 +1,5 @@
 // Connection test the way ST's own "Connect" button does it: one GET /models.
-// A model list back means URL and key are valid; nothing is generated, so no quota is spent.
+// A model list confirms this endpoint responds; it does not prove every model can generate.
 // Requests go through SillyTavern's server first (no browser CORS), and fall back to a
 // direct fetch, which also tells us the real HTTP status when ST only reports "error".
 import { store } from './store.js';
@@ -11,6 +11,7 @@ const STATUS = '/api/backends/chat-completions/status';
 const TIMEOUT = 20000;
 
 let ctx = null;
+const latestProbe = new Map();
 
 export function initProbe(context) {
     ctx = context;
@@ -57,9 +58,17 @@ async function postST(path, body) {
 async function modelsViaST(body) {
     const { res, data } = await postST(STATUS, body);
     if (!res.ok) throw new ProbeError(httpMessage(res.status), res.status);
-    // ST answers 200 with { error: true } when the upstream call failed, without the upstream status.
-    if (!data || data.error) throw new ProbeError('连接失败：地址不对或密钥无效');
-    return parseModelList(data);
+    return checkedModels(data);
+}
+
+function checkedModels(data) {
+    const status = Number(data?.code ?? data?.status);
+    if (!data || data.error || data.success === false || (status >= 400 && status < 600)) {
+        throw new ProbeError('接口返回错误，未能取得模型列表', status >= 400 && status < 600 ? status : 0);
+    }
+    const models = parseModelList(data);
+    if (!models.length) throw new ProbeError('没有返回可用的模型列表，暂时无法确认连接有效');
+    return models;
 }
 
 async function modelsDirect(url, headers) {
@@ -68,7 +77,7 @@ async function modelsDirect(url, headers) {
     const data = await res.json().catch(() => {
         throw new ProbeError('返回的不是 JSON，地址可能不对');
     });
-    return parseModelList(data);
+    return checkedModels(data);
 }
 
 async function listAt(base, key) {
@@ -105,20 +114,33 @@ function stSecretBody(p) {
     return body;
 }
 
-function save(p, patch) {
-    if (p.id && store.get(p.id)) store.upsert({ id: p.id, ...patch });
+function credentials(p) {
+    return JSON.stringify([p.url || '', p.key || '', p.stRef?.key || '', p.stRef?.id ?? null, !!p.stMissing]);
+}
+
+function save(p, token, patch) {
+    const current = p.id && store.get(p.id);
+    if (current && latestProbe.get(p.id) === token && credentials(current) === credentials(p)) {
+        store.upsert({ id: p.id, ...patch });
+        return true;
+    }
+    return false;
 }
 
 /**
  * Tests the connection by listing models. Works on saved profiles and on unsaved editor drafts.
- * @returns {Promise<{ok:true, ms:number, base:string, models:string[], via:string}>}
+ * @returns {Promise<{ok:true, ms:number, base:string, models:string[], via:string, stale:boolean}>}
  */
 export async function probe(profile) {
-    const p = profile;
+    // The store mutates records in place; do not let edits change an in-flight request's identity.
+    const p = { ...profile, stRef: profile.stRef ? { ...profile.stRef } : null };
+    const token = {};
+    if (p.id) latestProbe.set(p.id, token);
     const t0 = performance.now();
     try {
         // Editor drafts carry the key being typed, which may differ from the saved one.
         const key = p.key || await resolveKey(p);
+        if (key) p.key = key;
         let models;
         let base = normalizeUrl(p.url);
         let via = '';
@@ -146,11 +168,14 @@ export async function probe(profile) {
         }
 
         const ms = Math.round(performance.now() - t0);
-        save(p, { models, modelsAt: Date.now(), health: { ok: true, ms, at: Date.now(), count: models.length, base } });
-        return { ok: true, ms, base, models, via };
+        const saved = save(p, token, { models, modelsAt: Date.now(), health: { ok: true, ms, at: Date.now(), count: models.length, base } });
+        return { ok: true, ms, base, models, via, stale: !!p.id && !saved };
     } catch (err) {
         const e = friendly(err);
-        save(p, { health: { ok: false, ms: 0, at: Date.now(), error: e.message } });
+        const saved = save(p, token, { health: { ok: false, ms: 0, at: Date.now(), error: e.message } });
+        e.stale = !!p.id && !saved;
         throw e;
+    } finally {
+        if (p.id && latestProbe.get(p.id) === token) latestProbe.delete(p.id);
     }
 }

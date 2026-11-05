@@ -1,7 +1,7 @@
 // Scans other extensions' saved settings for URL + key pairs they already store,
 // and reads / writes those locations so vault edits can flow back into the extensions.
 import { classifyDescriptor, KIND, tokenize } from './detect.js';
-import { MODULE, ST_OWNED_SETTINGS, guessName, hashKey, normalizeUrl } from './vault.js';
+import { MODULE, ST_OWNED_SETTINGS, guessName, hashKey, urlIdentity } from './vault.js';
 
 const isPlain = v => v && typeof v === 'object' && !Array.isArray(v);
 const looksUrl = v => /^https?:\/\/\S+$/i.test(v.trim());
@@ -13,6 +13,22 @@ const looksKey = v => v.trim().length >= 8 && !/\s/.test(v.trim()) && !looksUrl(
 const NAME_TOKENS = new Set(['name', 'label', 'title', 'alias', 'remark', 'remarks', 'nickname', 'nick', 'note', 'display']);
 const NOT_NAME_TOKENS = new Set(['model', 'prompt', 'template', 'file', 'user', 'char', 'character', 'avatar', 'preset', 'voice', 'key', 'url']);
 const EXACT_NAME = /^(name|label|title|alias|remark|displayName|display_name|channelName|channel_name|nickname)$/i;
+
+const FIELD_WORDS = new Set(['api', 'key', 'apikey', 'token', 'secret', 'password', 'passwd', 'pwd', 'pass', 'bearer', 'authorization', 'credential', 'credentials', 'url', 'uri', 'endpoint', 'host', 'baseurl', 'apiurl', 'apibase', 'proxy', 'server', 'domain', 'address', 'addr', 'base', 'access']);
+const fieldWords = prop => tokenize(prop).filter(t => !FIELD_WORDS.has(t));
+
+function pairedUrl(keyProp, urls) {
+    const keyWords = fieldWords(keyProp);
+    const scored = urls.map(url => {
+        const words = fieldWords(url.prop);
+        const score = words.join('') && words.join('') === keyWords.join('')
+            ? 1000 : words.filter(t => keyWords.includes(t)).length;
+        return { url, words, score };
+    }).sort((a, b) => b.score - a.score);
+    if (scored[0]?.score > 0 && scored[0].score !== scored[1]?.score) return scored[0].url;
+    if (scored.length === 1 && (!keyWords.length || !scored[0].words.length)) return scored[0].url;
+    return null;
+}
 
 /** Best name prop in one settings object, preferring exact ones like "name" over "xxx_label". */
 export function pickNameProp(node) {
@@ -61,14 +77,17 @@ export function scanExtensionSettings(settings, { maxDepth = 6 } = {}) {
         const source = segs[0];
         const named = pickNameProp(node);
         for (const k of keys) {
-            const url = urls[0]?.value || '';
+            const paired = pairedUrl(k.prop, urls);
+            // Ambiguous provider fields must not become a guessed credential pair.
+            if (urls.length && !paired) continue;
+            const url = paired?.value || '';
             out.push({
                 source,
                 url,
                 key: k.value,
                 label: named?.value || '',
                 name: named?.value || guessName(url, source),
-                ref: { segs, keyProp: k.prop, urlProp: urls[0]?.prop || '', nameProp: named?.prop || '', nameSeen: named?.value || '' },
+                ref: { segs, keyProp: k.prop, urlProp: paired?.prop || '', urlSeen: url, nameProp: named?.prop || '', nameSeen: named?.value || '' },
             });
         }
     };
@@ -87,7 +106,7 @@ export function scanExtensionSettings(settings, { maxDepth = 6 } = {}) {
                 key: apiKey.trim(),
                 label: '',
                 name: 'Extras API',
-                ref: { segs: [], keyProp: 'apiKey', urlProp: 'apiUrl', nameProp: '', nameSeen: '' },
+                ref: { segs: [], keyProp: 'apiKey', urlProp: 'apiUrl', urlSeen: typeof apiUrl === 'string' ? apiUrl : '', nameProp: '', nameSeen: '' },
             });
         }
     }
@@ -101,7 +120,7 @@ export function scanExtensionSettings(settings, { maxDepth = 6 } = {}) {
         entry.refs.push({ ...ref, source: c.source, hash: hashKey(c.key) });
         unique.set(id, entry);
     };
-    const pairId = c => `${c.key}\n${normalizeUrl(c.url).toLowerCase()}`;
+    const pairId = c => `${c.key}\n${urlIdentity(c.url)}`;
     for (const { ref, ...c } of out) if (c.url) add(pairId(c), c, ref);
     for (const { ref, ...c } of out) {
         if (c.url) continue;

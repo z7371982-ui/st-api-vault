@@ -7,6 +7,7 @@ import { setFieldValue } from './detect.js';
 let ctx = null;
 let modPromise = null;
 let cachedKeys = null;
+let modelApplyVersion = 0;
 
 // name, well-known base URL
 const PROVIDERS = {
@@ -185,6 +186,7 @@ export const st = {
      * @returns {boolean} whether there was a model dropdown to set
      */
     applyModel(model) {
+        const version = ++modelApplyVersion;
         const s = ctx.chatCompletionSettings;
         if (!s || !model) return false;
         const source = s.chat_completion_source;
@@ -217,7 +219,11 @@ export const st = {
             const again = () => {
                 if (done) return;
                 done = true;
-                if (s[`${base}_model`] !== model || document.getElementById(`model_${base}_select`)?.value !== model) apply();
+                // A later user choice or another apply owns the selection now. Only repair a
+                // reloaded dropdown while the settings still describe this exact application.
+                if (version !== modelApplyVersion || ctx.chatCompletionSettings !== s
+                    || s.chat_completion_source !== source || s[`${base}_model`] !== model) return;
+                if (document.getElementById(`model_${base}_select`)?.value !== model) apply();
             };
             eventSource.once(eventTypes.ONLINE_STATUS_CHANGED, () => setTimeout(again, 50));
             // Some sources do not reconnect at all; stop waiting after a while.

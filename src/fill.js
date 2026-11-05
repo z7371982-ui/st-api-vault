@@ -8,7 +8,7 @@ import {
 import { resolveKey, syncToST } from './sync.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
-import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByKey, guessName } from './vault.js';
+import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName } from './vault.js';
 
 const TITLE = 'API 管理器';
 // ST's own key inputs offer saved secret ids (UUIDs) in a datalist; those are not keys.
@@ -35,6 +35,11 @@ let openPanel = () => {};
 const listeners = new Set();
 const prompted = new Set();
 
+function fieldBinding(el) {
+    const fp = fingerprint(el);
+    return fp ? store.binding(fp) : null;
+}
+
 export function onTargetChange(fn) {
     listeners.add(fn);
     return () => listeners.delete(fn);
@@ -49,7 +54,7 @@ function emit() {
 export function currentTarget() {
     if (!target?.el.isConnected || !defaultVisible(target.el)) return null;
     const { el, kind } = target;
-    return { el, kind, scope: scopeTitle(el), label: fieldLabel(el), binding: store.binding(fingerprint(el)) };
+    return { el, kind, scope: scopeTitle(el), label: fieldLabel(el), binding: fieldBinding(el) };
 }
 
 export function canFill(p, kind) {
@@ -72,7 +77,8 @@ function flash(el) {
 }
 
 function bindingEntry(el, kind, profileId) {
-    return [fingerprint(el), { profileId, kind, scope: scopeTitle(el), label: fieldLabel(el) }];
+    const fp = fingerprint(el);
+    return fp ? [fp, { profileId, kind, scope: scopeTitle(el), label: fieldLabel(el) }] : null;
 }
 
 /**
@@ -117,6 +123,18 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
 
     const fields = [[el, kind]];
     const partner = findPartner(el, other(kind));
+    const urlField = kind === KIND.URL ? el : partner;
+    const keyField = kind === KIND.KEY ? el : partner;
+    const currentUrl = urlField?.value.trim() || '';
+    const currentKey = keyField?.value.trim() || '';
+    // A preserved field must belong to this same pair; never combine credentials silently.
+    const conflict = (keepFilled && ((currentUrl && !sameUrl(currentUrl, p.url)) || (currentKey && currentKey !== key)))
+        || (keyField && key && urlField && !p.url)
+        || (urlField && p.url && keyField && currentKey && !key && !sameUrl(currentUrl, p.url));
+    if (conflict) {
+        if (!quiet) toastr.warning('当前地址和密钥无法与该配置配对，请补全配置或先核对输入框', TITLE);
+        return false;
+    }
     if (partner && values[other(kind)]) fields.push([partner, other(kind)]);
     const todo = keepFilled ? fields.filter(([f]) => !f.value.trim()) : fields;
     // A free-text model box in the same block gets the profile's model, if it has one.
@@ -137,7 +155,7 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
         filling = false;
     }
 
-    store.bindMany(fields.map(([f, k]) => bindingEntry(f, k, p.id)));
+    store.bindMany(fields.map(([f, k]) => bindingEntry(f, k, p.id)).filter(Boolean));
     store.touch(p.id);
     if (!quiet) {
         const parts = todo.length > 1 ? '地址和密钥' : KIND_LABEL[todo[0]?.[1] ?? kind];
@@ -157,7 +175,7 @@ export function captureFrom(el = target?.el) {
         toastr.warning('输入框还是空的', TITLE);
         return null;
     }
-    const dup = key && findProfileByKey(store.profiles, key);
+    const dup = key ? findProfileByPair(store.profiles, key, url) : store.profiles.find(p => !p.key && sameUrl(p.url, url));
     if (dup) {
         toastr.info(`「${esc(dup.name)}」已经存过了`, TITLE);
         return dup;
@@ -166,8 +184,9 @@ export function captureFrom(el = target?.el) {
     const p = store.upsert({ name: guessName(url, scope), url, key, tags: scope ? [scope] : [] });
     const entries = [bindingEntry(el, kind, p.id)];
     if (partner) entries.push(bindingEntry(partner, other(kind), p.id));
-    store.bindMany(entries);
-    toastr.success(`已保存为「${esc(p.name)}」并绑定这个输入框`, TITLE);
+    const bindings = entries.filter(Boolean);
+    store.bindMany(bindings);
+    toastr.success(`已保存为「${esc(p.name)}」${bindings.length ? '并绑定输入框' : ''}`, TITLE);
     emit();
     return p;
 }
@@ -477,11 +496,28 @@ function renderPopList() {
     listEl.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
 }
 
+function updatePopLayout() {
+    const sheet = isCompact();
+    if (pop.classList.contains('is-sheet') !== sheet) pop.removeAttribute('style');
+    pop.classList.toggle('is-sheet', sheet);
+    if (sheet) {
+        if (!backdrop) {
+            backdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop' });
+            // Close on click, not on pointerdown, so the tap does not land on the page underneath.
+            backdrop.addEventListener('click', () => closePop(false));
+        }
+        mount(backdrop, { sheet });
+    } else {
+        backdrop?.remove();
+    }
+    mount(pop, { sheet });
+    return sheet;
+}
+
 function placePop() {
     const t = currentTarget();
     if (!t) return closePop(false);
-    // The bottom sheet is placed by CSS.
-    if (pop.classList.contains('is-sheet')) return;
+    if (updatePopLayout()) return; // The bottom sheet is placed by CSS.
     const rect = anchorEl().getBoundingClientRect();
     const width = Math.min(340, innerWidth - 16);
     pop.style.width = `${width}px`;
@@ -496,18 +532,8 @@ function openPop() {
     const t = currentTarget();
     if (!t) return;
     ensurePop();
-    const sheet = isCompact();
-    pop.classList.toggle('is-sheet', sheet);
     pop.removeAttribute('style');
-    if (sheet) {
-        if (!backdrop) {
-            backdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop' });
-            // Close on click, not on pointerdown, so the tap does not land on the page underneath.
-            backdrop.addEventListener('click', () => closePop(false));
-        }
-        mount(backdrop, { sheet });
-    }
-    mount(pop, { sheet });
+    const sheet = updatePopLayout();
     popIndex = 0;
     const input = pop.querySelector('input');
     input.value = '';
@@ -618,7 +644,7 @@ function onFocusOut(e) {
 
 async function maybeAutoFill(el) {
     if (!store.options.autoFillBound || el.value.trim()) return;
-    const b = store.binding(fingerprint(el));
+    const b = fieldBinding(el);
     const p = b && store.get(b.profileId);
     if (p) await fillProfile(p, el, { quiet: true, keepFilled: true });
 }
@@ -631,8 +657,9 @@ function onChange(e) {
     const kind = classifyElement(el);
     if (!kind) return;
     const { key, url } = readPair(el, kind);
-    if (key.length < 8 || UUID.test(key) || /\s/.test(key) || prompted.has(key) || findProfileByKey(store.profiles, key)) return;
-    prompted.add(key);
+    const pair = JSON.stringify([key, url]);
+    if (key.length < 8 || UUID.test(key) || /\s/.test(key) || prompted.has(pair) || findProfileByPair(store.profiles, key, url)) return;
+    prompted.add(pair);
     const where = url ? `（${esc(hostOf(url) || url)}）` : '';
     toastr.info(`发现新的密钥${where}，点这里存进管理器`, TITLE, {
         timeOut: 7000,

@@ -111,6 +111,7 @@ function normExtRef(r) {
     if (ST_OWNED_SETTINGS.has(String(r.segs[0]))) return null;
     return {
         segs: r.segs.map(String), keyProp: str(r.keyProp), urlProp: str(r.urlProp), source: str(r.source), hash: str(r.hash),
+        urlSeen: typeof r.urlSeen === 'string' ? r.urlSeen : undefined,
         nameProp: str(r.nameProp), nameSeen: str(r.nameSeen),
     };
 }
@@ -135,9 +136,16 @@ export function hostOf(url) {
     }
 }
 
+/** URL parsing normalizes host/protocol casing, but paths and queries remain case-sensitive. */
+export function urlIdentity(url) {
+    const value = normalizeUrl(url);
+    if (!value) return '';
+    try { return new URL(value).href; } catch { return value; }
+}
+
 export function sameUrl(a, b) {
-    const x = normalizeUrl(a).toLowerCase();
-    return !!x && x === normalizeUrl(b).toLowerCase();
+    const x = urlIdentity(a);
+    return !!x && x === urlIdentity(b);
 }
 
 export function guessName(url, fallback = '新配置') {

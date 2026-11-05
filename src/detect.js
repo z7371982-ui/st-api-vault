@@ -223,13 +223,21 @@ function findNearby(el, predicate, { isVisible = defaultVisible, maxDepth = 5 } 
 export function fingerprint(el) {
     // Fields inside a shadow root are prefixed with their host, e.g. "#bbi-app-host>>shadow input[API 密钥]".
     const shadow = shadowRootOf(el);
-    const prefix = shadow ? `${fingerprint(shadow.host)}>>` : '';
-    if (el.id && !RANDOMISH_ID.test(el.id)) return `${prefix}#${el.id}`;
+    const hostId = shadow && fingerprint(shadow.host);
+    if (shadow && !hostId) return null;
+    const prefix = shadow ? `${hostId}>>` : '';
+    const tree = shadow || el.ownerDocument;
+    const uniqueId = node => [...tree.querySelectorAll('[id]')].filter(n => n.id === node.id).length === 1;
+    if (el.id && !RANDOMISH_ID.test(el.id)) return uniqueId(el) ? `${prefix}#${el.id}` : null;
     let scope = el.parentElement;
     while (scope && (!scope.id || RANDOMISH_ID.test(scope.id))) scope = scope.parentElement;
     const root = scope || shadow || el.ownerDocument.body;
-    const sig = el.getAttribute('name') || el.getAttribute('placeholder') || `#${[...root.querySelectorAll(FIELD_SELECTOR)].indexOf(el)}`;
-    return `${prefix}${scope ? `#${scope.id}` : shadow ? 'shadow' : 'body'} ${el.tagName.toLowerCase()}[${sig}]`;
+    const signature = node => node.getAttribute('name') || node.getAttribute('placeholder');
+    const sig = signature(el);
+    if (!sig || (scope && !uniqueId(scope))) return null;
+    if ([...root.querySelectorAll(el.tagName)].filter(n => signature(n) === sig).length !== 1) return null;
+    // Retire old name/placeholder and positional bindings, which could have been ambiguous.
+    return `v2:${prefix}${scope ? `#${scope.id}` : shadow ? 'shadow' : 'body'} ${el.tagName.toLowerCase()}[${sig}]`;
 }
 
 /** Name of the extension / popup that owns the field, e.g. the drawer header text. */
@@ -254,6 +262,6 @@ export function setFieldValue(el, value) {
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     if (setter) setter.call(el, value);
     else el.value = value;
-    el.dispatchEvent(new view.Event('input', { bubbles: true }));
+    el.dispatchEvent(new view.Event('input', { bubbles: true, composed: true }));
     el.dispatchEvent(new view.Event('change', { bubbles: true }));
 }

@@ -22,6 +22,8 @@ let tag = '';
 let importState = null; // { loading, canView, items, picked:Set }
 // Editor-only state for the connection test, kept outside the form so re-renders do not lose it.
 let probeState = null; // { busy, ok, text, models:string[] }
+let editorEpoch = 0;
+let queryComposing = false;
 const testing = new Set(); // profile ids with a card-level test running
 let armedDelete = null; // profile id whose delete button is waiting for the confirming second tap
 let armTimer = 0;
@@ -33,12 +35,21 @@ async function copy(text, what) {
     try {
         await navigator.clipboard.writeText(text);
     } catch {
+        const focused = document.activeElement;
         const ta = Object.assign(document.createElement('textarea'), { value: text });
         ta.style.cssText = 'position:fixed;opacity:0';
-        document.body.append(ta);
-        ta.select();
-        document.execCommand('copy');
-        ta.remove();
+        (root.closest('dialog[open]') || document.body).append(ta);
+        let copied = false;
+        try {
+            ta.focus({ preventScroll: true });
+            ta.select();
+            copied = document.execCommand('copy');
+        } catch { /* Report failure below. */ }
+        finally {
+            ta.remove();
+            focused?.focus({ preventScroll: true });
+        }
+        if (!copied) return toastr.error('复制失败，请在编辑页手动选择并复制', TITLE);
     }
     toastr.success(`${what}已复制`, TITLE, { timeOut: 1200 });
 }
@@ -153,6 +164,7 @@ function testSection(p) {
     const h = !s && p?.health;
     let status = '<div class="avm-test-status"><span class="avm-dot"></span>未连接</div>';
     if (s?.busy) status = '<div class="avm-test-status"><i class="fa-solid fa-spinner fa-spin"></i>正在连接…</div>';
+    else if (s?.dirty) status = '<div class="avm-test-status"><span class="avm-dot"></span>配置已更改，尚未测试</div>';
     else if (s) status = `<div class="avm-test-status ${s.ok ? 'is-ok' : 'is-bad'}"><span class="avm-dot"></span>${esc(s.text)}</div>`;
     else if (h) status = `<div class="avm-test-status ${h.ok ? 'is-ok' : 'is-bad'}"><span class="avm-dot"></span>${esc(h.ok
         ? `有效 · ${h.ms}ms · ${h.count} 个模型（${relTime(h.at).replace('用过', '测试')}）`
@@ -214,7 +226,7 @@ function editView() {
     if (current && !slots.includes(current)) slots.unshift(current);
     const bindings = p ? store.bindingsFor(p.id) : [];
     const keyPlaceholder = !v.key && v.stRef ? `酒馆里已保存（${v.keyHint || '掩码'}），原文不可见` : 'sk-...';
-    const models = probeState?.models?.length ? probeState.models : (p?.models || []);
+    const models = probeState ? (probeState.models || []) : (p?.models || []);
 
     return `
         <div class="avm-subhead">
@@ -348,9 +360,11 @@ function settingsView() {
         </div>`;
 }
 
-export function render() {
+export function render({ force = false } = {}) {
     if (!root?.classList.contains('is-open')) return;
     const body = root.querySelector('.avm-body');
+    // Background completion and reopening must not replace a live editor or IME input.
+    if (!force && ((view === 'edit' && body.querySelector('[data-role="editor"]')) || queryComposing)) return;
     const focused = document.activeElement;
     const keepQuery = focused?.dataset?.role === 'query';
     const caret = keepQuery ? focused.selectionStart : 0;
@@ -366,10 +380,12 @@ export function render() {
 // ---------- actions ----------
 
 function go(next, id = null) {
+    editorEpoch++;
+    queryComposing = false;
     view = next;
     editId = id;
     probeState = null;
-    render();
+    render({ force: true });
     root.querySelector('.avm-body').scrollTop = 0;
 }
 
@@ -404,6 +420,7 @@ function readForm(form) {
 
 async function saveForm(form) {
     const data = readForm(form);
+    const savingId = editId;
     const existing = editId && store.get(editId);
     if (!data.url && !data.key && !existing?.stRef) {
         toastr.warning('地址和密钥至少填一个', TITLE);
@@ -411,10 +428,11 @@ async function saveForm(form) {
     }
     const dup = findDuplicate(store.profiles.filter(p => p.id !== editId), data);
     if (dup && !(await confirmDialog('有重复的配置', `「${dup.name}」已经是同一个${data.key ? '密钥' : '地址'}，还要再存一份吗？`))) return;
+    if (form !== root.querySelector('[data-role="editor"]') || editId !== savingId) return;
     // Keep the ST-only key when the field was left empty for a profile imported with a mask.
     if (existing && !data.key && existing.stRef) delete data.key;
     // A successful test in the editor already fetched the models; keep them.
-    if (probeState?.ok) Object.assign(data, { models: probeState.models, modelsAt: Date.now(), health: probeState.health });
+    if (testedDraftMatches(form)) Object.assign(data, { models: probeState.models, modelsAt: Date.now(), health: probeState.health });
     // A name typed by the user is never replaced by names found later in ST or extensions.
     const typedName = !!data.name && data.name !== existing?.name;
     if (typedName || !data.name) data.nameAuto = !data.name;
@@ -439,9 +457,26 @@ function editorDraft(form) {
     const data = readForm(form);
     const saved = editId && store.get(editId);
     if (!saved) return data;
-    const sameKey = !data.key || data.key === saved.key;
+    const sameKey = data.key === saved.key || (!data.key && !!saved.stRef);
     if (sameKey && (data.url || '') === (saved.url || '')) return { ...saved, ...data, key: data.key || saved.key };
     return { ...data, key: data.key || (sameKey ? saved.key : ''), stRef: sameKey ? saved.stRef : null, stMissing: saved.stMissing };
+}
+
+function probeSignature(form) {
+    const p = editorDraft(form);
+    // Reading a masked ST secret may populate the store without changing this form.
+    return JSON.stringify([p.url, readForm(form).key, p.syncTarget, p.stRef?.key, p.stRef?.id, !!p.stMissing]);
+}
+
+function invalidateEditorTest() {
+    editorEpoch++;
+    if (probeState?.dirty) return;
+    probeState = { dirty: true, models: [] };
+    refreshTest();
+}
+
+function testedDraftMatches(form) {
+    return probeState?.ok && probeState.signature === probeSignature(form) && probeState.key === editorDraft(form).key;
 }
 
 /** Re-renders only the test block and the model suggestions, leaving typed form values alone. */
@@ -450,7 +485,7 @@ function refreshTest() {
     if (!box || view !== 'edit') return;
     const p = editId ? store.get(editId) : null;
     box.outerHTML = testSection(p);
-    const models = probeState?.models?.length ? probeState.models : (p?.models || []);
+    const models = probeState ? (probeState.models || []) : (p?.models || []);
     const list = root.querySelector('#avm_models_datalist');
     if (list) list.innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
     const input = root.querySelector('[name="model"]');
@@ -459,17 +494,29 @@ function refreshTest() {
 
 async function runEditorProbe(form) {
     const draft = editorDraft(form);
+    const epoch = ++editorEpoch;
+    const signature = probeSignature(form);
+    const isCurrent = () => {
+        if (epoch !== editorEpoch || form !== root.querySelector('[data-role="editor"]')) return false;
+        if (signature === probeSignature(form)) return true;
+        invalidateEditorTest();
+        return false;
+    };
     probeState = { busy: true };
     refreshTest();
     try {
         const r = await probe(draft);
+        if (!isCurrent()) return;
+        if (r.stale) return invalidateEditorTest();
         const health = { ok: true, ms: r.ms, at: Date.now(), count: r.models.length, base: r.base };
         const text = `有效 · ${r.ms}ms · ${r.models.length} 个模型${r.via ? `（${r.via}）` : ''}${r.base && r.base !== normalizeUrl(draft.url) ? ` · 实际地址 ${r.base}` : ''}`;
-        probeState = { busy: false, ok: true, text, models: r.models, health };
+        probeState = { busy: false, ok: true, text, models: r.models, health, signature, key: editorDraft(form).key };
         // Suggest the first model when none is set, so the model box is not left empty.
         const modelInput = form.querySelector('[name="model"]');
         if (modelInput && !modelInput.value.trim() && r.models.length) modelInput.value = r.models[0];
     } catch (err) {
+        if (!isCurrent()) return;
+        if (err.stale) return invalidateEditorTest();
         probeState = { busy: false, ok: false, text: `无效 · ${err.message || String(err)}`, models: [] };
     }
     refreshTest();
@@ -481,8 +528,10 @@ async function runCardTest(p) {
     render();
     try {
         const r = await probe(p);
+        if (r.stale) return;
         toastr.success(`「${esc(p.name)}」连接正常：${r.ms}ms，${r.models.length} 个模型`, TITLE, { timeOut: 2200 });
     } catch (err) {
+        if (err.stale) return;
         toastr.error(`「${esc(p.name)}」${esc(err.message || String(err))}`, TITLE);
     } finally {
         testing.delete(p.id);
@@ -542,9 +591,13 @@ async function onClick(e) {
         }
         case 'reveal': {
             const cur = store.get(editId);
+            const epoch = editorEpoch;
+            const signature = probeSignature(form);
             const key = cur && await resolveKey(cur);
+            if (epoch !== editorEpoch || form !== root.querySelector('[data-role="editor"]') || signature !== probeSignature(form)) return;
             if (key) {
                 form.querySelector('[name="key"]').value = key;
+                invalidateEditorTest();
                 toastr.success('已从酒馆读到密钥原文', TITLE, { timeOut: 1500 });
             } else {
                 toastr.warning('酒馆不允许读取原文（config.yaml 里的 allowKeysExposure 是关的）', TITLE);
@@ -556,6 +609,7 @@ async function onClick(e) {
             if (!url && !key) return toastr.warning('没认出地址或密钥', TITLE);
             if (url) form.querySelector('[name="url"]').value = url;
             if (key) form.querySelector('[name="key"]').value = key;
+            invalidateEditorTest();
             const name = form.querySelector('[name="name"]');
             if (!name.value && url) name.placeholder = hostOf(url);
             toastr.success(`识别到${[url && '地址', key && '密钥'].filter(Boolean).join('和')}`, TITLE, { timeOut: 1500 });
@@ -565,7 +619,10 @@ async function onClick(e) {
         case 'test': return p && !testing.has(p.id) && runCardTest(p);
         case 'unbind': {
             store.unbind(el.dataset.fp);
-            return render();
+            const list = el.closest('ul');
+            el.closest('li')?.remove();
+            if (list && !list.children.length) list.parentElement.remove();
+            return;
         }
         case 'delete': {
             const cur = store.get(editId);
@@ -623,12 +680,15 @@ async function onClick(e) {
 function onInput(e) {
     if (e.target.dataset.role === 'query') {
         query = e.target.value;
-        render();
+        if (!e.isComposing && !queryComposing) render();
+    } else if (view === 'edit' && ['url', 'key'].includes(e.target.name)) {
+        invalidateEditorTest();
     }
 }
 
 function onChange(e) {
     const t = e.target;
+    if (view === 'edit' && ['url', 'key', 'syncTarget'].includes(t.name)) invalidateEditorTest();
     if (t.dataset.opt) store.setOption(t.dataset.opt, t.checked);
     if (t.dataset.pick !== undefined && importState) {
         const i = Number(t.dataset.pick);
@@ -642,6 +702,38 @@ function onChange(e) {
 
 let fab = null;
 let panelBackdrop = null;
+let panelDialog = null;
+
+function updatePanelLayer() {
+    if (!isCompact() || !root.classList.contains('is-open')) {
+        panelBackdrop?.remove();
+        if (panelDialog?.open) {
+            document.body.append(root);
+            panelDialog.close();
+        }
+        return;
+    }
+    if (!panelBackdrop) {
+        panelBackdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop avm-panel-backdrop' });
+        panelBackdrop.addEventListener('click', () => closePanel());
+    }
+    // A modal dialog uses the browser's top layer, above host overlays regardless of z-index.
+    if (!panelDialog && typeof HTMLDialogElement !== 'undefined' && typeof HTMLDialogElement.prototype.showModal === 'function') {
+        panelDialog = Object.assign(document.createElement('dialog'), { className: 'avm-root avm-panel-layer' });
+        panelDialog.setAttribute('aria-label', TITLE);
+        panelDialog.addEventListener('cancel', e => {
+            e.preventDefault();
+            closePanel();
+        });
+        document.body.append(panelDialog);
+    }
+    if (panelDialog) {
+        if (root.parentElement !== panelDialog) panelDialog.append(panelBackdrop, root);
+        if (!panelDialog.open) panelDialog.showModal();
+    } else {
+        document.body.append(panelBackdrop);
+    }
+}
 
 /** "auto" means: show the floating button only where there is no keyboard shortcut. */
 function fabEnabled() {
@@ -665,15 +757,8 @@ export function openPanel() {
     root.classList.add('is-open');
     root.setAttribute('aria-hidden', 'false');
     if (view === 'import' && !importState) view = 'list';
-    // Phones: dim the chat behind the sheet; tapping it closes the sheet.
-    if (isCompact()) {
-        if (!panelBackdrop) {
-            panelBackdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop avm-panel-backdrop' });
-            panelBackdrop.addEventListener('click', () => closePanel());
-        }
-        document.body.append(panelBackdrop);
-    }
     render();
+    updatePanelLayer();
     updateFab();
 }
 
@@ -681,7 +766,7 @@ export function closePanel() {
     root.classList.remove('is-open');
     root.setAttribute('aria-hidden', 'true');
     root.style.transform = '';
-    panelBackdrop?.remove();
+    updatePanelLayer();
     updateFab();
 }
 
@@ -714,6 +799,15 @@ export function initPanel(context) {
 
     root.addEventListener('click', e => onClick(e).catch(err => console.error('[API Vault]', err)));
     root.addEventListener('input', onInput);
+    root.addEventListener('compositionstart', e => {
+        if (e.target.dataset.role === 'query') queryComposing = true;
+    });
+    root.addEventListener('compositionend', e => {
+        if (e.target.dataset.role === 'query') {
+            queryComposing = false;
+            onInput(e);
+        }
+    });
     root.addEventListener('change', onChange);
     root.addEventListener('submit', e => {
         e.preventDefault();
@@ -721,6 +815,7 @@ export function initPanel(context) {
     });
     root.addEventListener('keydown', e => {
         if (e.key === 'Escape') {
+            e.preventDefault();
             e.stopPropagation();
             if (view !== 'list') go('list');
             else closePanel();
@@ -730,11 +825,19 @@ export function initPanel(context) {
     // Phones: drag the header down to close, and keep the sheet above the on-screen keyboard.
     swipeToClose(root.querySelector('.avm-head'), root, () => closePanel());
     trackViewport();
+    window.addEventListener('resize', () => {
+        updatePanelLayer();
+        updateFab();
+    });
 
     // The editor holds unsaved input, so only the other views follow live changes.
     store.onChange(() => {
         updateFab();
         if (view !== 'edit') render();
+        else if (probeState?.ok) {
+            const form = root.querySelector('[data-role="editor"]');
+            if (form && !testedDraftMatches(form)) invalidateEditorTest();
+        }
     });
     updateFab();
 }
