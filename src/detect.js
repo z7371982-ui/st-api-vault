@@ -255,6 +255,52 @@ export function scopeTitle(el) {
     return t.slice(0, 48);
 }
 
+const HEADING = 'h1, h2, h3, h4, h5, legend, .inline-drawer-header, [class*="title"], [class*="header"]';
+
+/** Text of a short heading that is a child of `node` and not the field's own container. */
+function headingOf(node, el) {
+    for (const h of node.querySelectorAll?.(`:scope > ${HEADING.split(', ').join(', :scope > ')}`) || []) {
+        if (h.contains(el) || h.querySelector(FIELD_SELECTOR + ', select')) continue;
+        const t = clean(h.textContent);
+        if (t && t.length <= 30) return t;
+    }
+    return '';
+}
+
+/**
+ * Where a field lives, recorded when it is filled so the manager can show it while the plugin is closed.
+ * `plugin`: the outermost extension drawer title, the window title, or the menu entry the user opened it
+ * from (`opener`). `path`: headings from the outside in, e.g. ["设置", "编辑渠道"], ending with the field label.
+ */
+export function fieldPlace(el, { opener = '' } = {}) {
+    const headings = [];
+    let drawerTitle = '';
+    let windowTitle = '';
+    for (let n = el.parentElement || shadowRootOf(el)?.host; n && n !== el.ownerDocument.body; n = n.parentElement || shadowRootOf(n)?.host) {
+        if (n.matches?.('.inline-drawer')) {
+            const t = clean(n.querySelector(':scope > .inline-drawer-header, :scope > .inline-drawer-toggle')?.textContent);
+            if (t) {
+                drawerTitle = t.slice(0, 40);
+                headings.push(drawerTitle);
+                continue;
+            }
+        }
+        if (n.matches?.('.popup, dialog, [role="dialog"]')) {
+            const t = clean(n.getAttribute('aria-label')) || headingOf(n, el);
+            if (t && !windowTitle) windowTitle = t.slice(0, 40);
+        }
+        const h = headingOf(n, el);
+        if (h) headings.push(h);
+    }
+    const outerIn = [...new Set(headings.reverse())];
+    // The outermost drawer is the extension itself ("扩展" panel); a window title or the menu entry otherwise.
+    const plugin = drawerTitle ? outerIn.find(t => t === drawerTitle) && outerIn[0] : (opener || windowTitle || outerIn[0] || '');
+    const path = outerIn.filter(t => t !== plugin).slice(-3);
+    const label = fieldLabel(el);
+    if (label && path[path.length - 1] !== label) path.push(label);
+    return { plugin: String(plugin || '').slice(0, 40), path };
+}
+
 /** Sets a value the way a user would, so jQuery, React and plain listeners all notice. */
 export function setFieldValue(el, value) {
     const view = el.ownerDocument.defaultView;

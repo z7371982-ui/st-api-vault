@@ -115,15 +115,15 @@ export const store = {
     bindMany(entries) {
         const at = Date.now();
         for (const [fp, data] of entries) {
-            // A name the user gave this field survives refilling it from the same profile.
+            // A refill that could not tell which plugin it is in keeps the place recorded before.
             const prev = this.settings.bindings[fp];
-            const keep = prev?.alias && prev.profileId === data.profileId ? { alias: prev.alias } : {};
-            this.settings.bindings[fp] = { ...keep, ...data, at };
+            const keep = prev?.place?.plugin && !data.place?.plugin ? { place: prev.place } : {};
+            this.settings.bindings[fp] = { ...data, ...keep, at };
         }
         this.save();
     },
 
-    /** Patches one binding, e.g. its alias or the hash of the value last written into the field. */
+    /** Patches one binding, e.g. the hash of the value last written into the field. */
     updateBinding(fp, patch) {
         const b = this.settings.bindings[fp];
         if (!b) return;

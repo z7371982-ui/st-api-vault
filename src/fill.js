@@ -3,7 +3,7 @@
 import { store } from './store.js';
 import {
     KIND, classifyElement, findPartner, findModelField, fingerprint, scopeTitle, fieldLabel, setFieldValue, defaultVisible,
-    eventTarget, deepActiveElement, shadowRootOf, closestComposed,
+    eventTarget, deepActiveElement, shadowRootOf, closestComposed, fieldPlace,
 } from './detect.js';
 import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
@@ -76,11 +76,56 @@ function flash(el) {
     );
 }
 
-/** valueHash is the hash of what the field holds after filling, to tell a stale copy from a hand edit later. */
+/**
+ * valueHash is the hash of what the field holds after filling, to tell a stale copy from a hand edit later.
+ * `place` is where the field lives (plugin + path), recorded now so it can be shown while the plugin is closed.
+ */
 function bindingEntry(el, kind, profileId) {
     const fp = rememberField(el);
     const value = String(el.value || '').trim();
-    return fp ? [fp, { profileId, kind, scope: scopeTitle(el), label: fieldLabel(el), valueHash: value ? hashKey(value) : '' }] : null;
+    const place = fieldPlace(el, { opener: openerFor(el) });
+    return fp ? [fp, { profileId, kind, scope: scopeTitle(el), label: fieldLabel(el), place, valueHash: value ? hashKey(value) : '' }] : null;
+}
+
+// ---------- which menu entry opened a plugin window ----------
+// Floating plugin windows (柏宝绘, 小手机, ...) often have no title the manager can read. The entry the user
+// tapped to open them (wand menu item, top bar button) names the plugin, so it is remembered for the window
+// that shows up right after the tap.
+
+const OPENER_SELECTOR = '#extensionsMenu .list-group-item, #extensionsMenu [class*="item"], #top-bar [title], #top-settings-holder .drawer-toggle, [id$="-topbar-btn"], [class*="topbar"] button';
+let lastOpener = null; // { name, at }
+const windowOpeners = new WeakMap();
+
+function openerName(node) {
+    const t = String(node.getAttribute('title') || node.getAttribute('aria-label') || node.textContent || '').replace(/\s+/g, ' ').trim();
+    return t.length <= 30 ? t : '';
+}
+
+function noteOpener(t) {
+    const node = closestComposed(t, OPENER_SELECTOR);
+    if (!node || node.closest('.avm-root') || node.id === 'avm_menu_entry') return;
+    const name = openerName(node);
+    if (name) lastOpener = { name, at: Date.now() };
+}
+
+/** The window-like container of a field: a fixed-position box, dialog or popup. */
+function windowOf(el) {
+    const up = n => n.parentElement || shadowRootOf(n)?.host || null;
+    for (let n = up(el); n && n !== document.body && n !== document.documentElement; n = up(n)) {
+        if (n.matches?.('dialog, .popup, [role="dialog"]') || getComputedStyle(n).position === 'fixed') return n;
+    }
+    return null;
+}
+
+/** The menu entry that opened the window holding `el`, if it was opened right after a tap on one. */
+function openerFor(el) {
+    if (closestComposed(el, '.inline-drawer')) return ''; // the drawer title names extensions-panel plugins
+    const win = windowOf(el);
+    if (!win) return '';
+    if (windowOpeners.has(win)) return windowOpeners.get(win);
+    const name = lastOpener && Date.now() - lastOpener.at < 120000 ? lastOpener.name : '';
+    if (name) windowOpeners.set(win, name);
+    return name;
 }
 
 // ---------- bound fields: find, locate, keep in sync ----------
@@ -151,17 +196,6 @@ export async function syncBinding(fp) {
     const el = findField(fp, b.kind);
     if (!el) return 'absent';
     return writeBound(fp, b, el, { force: true });
-}
-
-/** Scrolls to a bound field and flashes it. False when its plugin window is not open. */
-export function locateBinding(fp) {
-    const b = store.binding(fp);
-    const el = b && findField(fp, b.kind);
-    if (!el || !defaultVisible(el)) return false;
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    el.focus({ preventScroll: true });
-    flash(el);
-    return true;
 }
 
 /** Updates every open bound field of a profile. Returns how many were changed. */
@@ -813,7 +847,10 @@ function onChange(e) {
 function onPointerDown(e) {
     const t = eventTarget(e);
     // Start watching a plugin's shadow root before its input even gets focus.
-    if (t instanceof Element) watchShadowRoot(t);
+    if (t instanceof Element) {
+        watchShadowRoot(t);
+        noteOpener(t);
+    }
     if (!pop?.isConnected) return;
     if (t.closest?.('.avm-pop, .avm-pill, .avm-backdrop') || t === target?.el) return;
     closePop(false);

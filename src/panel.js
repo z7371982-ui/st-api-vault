@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { st } from './st.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST, linkExtensionsFor } from './sync.js';
 import { probe } from './probe.js';
-import { KIND_LABEL, syncBinding, locateBinding, syncProfileFields } from './fill.js';
+import { KIND_LABEL, syncBinding, syncProfileFields } from './fill.js';
 import { isCompact, isTouch, swipeToClose, trackViewport, createFab } from './sheet.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
@@ -119,7 +119,7 @@ function card(p) {
         synced && !active && !p.stMissing ? `<span class="avm-badge is-ok" title="已存进酒馆：${esc(st.providerName(p.stRef.key))}"><i class="fa-solid fa-link"></i>酒馆</span>` : '',
         out ? '<span class="avm-badge is-warn" title="密钥改过，酒馆里还是旧的"><i class="fa-solid fa-rotate"></i>待同步</span>' : '',
         !p.key && p.stRef ? '<span class="avm-badge" title="酒馆只给了掩码，只能在酒馆内切换使用"><i class="fa-solid fa-lock"></i>仅酒馆</span>' : '',
-        bindings.length ? `<span class="avm-badge" title="${esc(bindings.map(([, b]) => b.scope || b.label).filter(Boolean).join('、'))}"><i class="fa-solid fa-thumbtack"></i>${bindings.length} 处</span>` : '',
+        bindings.length ? `<span class="avm-badge" title="${esc(bindings.map(([, b]) => b.place?.plugin || b.scope || b.label).filter(Boolean).join('、'))}"><i class="fa-solid fa-thumbtack"></i>${bindings.length} 处</span>` : '',
     ].join('');
 
     return `<article class="avm-card" data-id="${esc(p.id)}">
@@ -564,16 +564,17 @@ function bindingsBlock(p) {
     if (!bindings.length) return '';
     const row = ([fp, b]) => {
         const status = bindingStatus(b, p);
-        const title = b.alias || `${b.scope || '页面'} · ${b.label || KIND_LABEL[b.kind] || ''}`;
-        const sub = b.alias ? `${b.scope || '页面'} · ${b.label || KIND_LABEL[b.kind] || ''}` : KIND_LABEL[b.kind] || '';
+        // Recorded when the field was filled: which plugin, and the headings leading to the field.
+        const place = b.place || {};
+        const plugin = place.plugin || b.scope || '未知插件';
+        const path = (place.path?.length ? place.path : [b.label || KIND_LABEL[b.kind] || '']).filter(Boolean).join(' › ');
         const badge = status === 'stale'
             ? '<span class="avm-badge is-warn" title="插件里还是旧的地址或密钥">待同步</span>'
             : status === 'ok' ? '<span class="avm-badge is-ok" title="和当前配置一致">最新</span>' : '';
-        return `<li data-fp="${esc(fp)}">
-            <span class="avm-binding-text"><b>${esc(title)}</b><small>${esc(sub)}</small></span>
+        const title = `${plugin}${path ? ` › ${path}` : ''}`;
+        return `<li data-fp="${esc(fp)}" title="${esc(title)}">
+            <span class="avm-binding-text"><b>${esc(plugin)}</b><small>${esc(path || KIND_LABEL[b.kind] || '')}</small></span>
             ${badge}
-            <button type="button" class="avm-icon-btn" data-act="binding-rename" data-fp="${esc(fp)}" title="起个名字" aria-label="给这个输入框起名"><i class="fa-solid fa-pen"></i></button>
-            <button type="button" class="avm-icon-btn" data-act="binding-locate" data-fp="${esc(fp)}" title="定位到这个输入框（插件窗口要开着）" aria-label="定位到输入框"><i class="fa-solid fa-crosshairs"></i></button>
             <button type="button" class="avm-icon-btn" data-act="binding-sync" data-fp="${esc(fp)}" title="把当前地址 / 密钥写进这个输入框" aria-label="同步到这个输入框"><i class="fa-solid fa-rotate"></i></button>
             <button type="button" class="avm-icon-btn" data-act="unbind" data-fp="${esc(fp)}" title="解除绑定" aria-label="解除绑定"><i class="fa-solid fa-xmark"></i></button>
         </li>`;
@@ -585,20 +586,6 @@ function bindingsBlock(p) {
         <span class="avm-hint">改了密钥后点「保存」：插件设置里的副本立即更新，插件输入框下次点进去时自动换成新的。插件窗口开着时，也可以点 <i class="fa-solid fa-rotate"></i> 马上同步。</span>
         ${plugins}
     </div>`;
-}
-
-async function renameBinding(fp) {
-    const b = store.binding(fp);
-    if (!b) return;
-    const fallback = `${b.scope || '页面'} · ${b.label || KIND_LABEL[b.kind] || ''}`;
-    let name = null;
-    try {
-        if (ctx.Popup?.show?.input) name = await ctx.Popup.show.input('给这个输入框起个名字', `留空恢复默认：${fallback}`, b.alias || '');
-        else name = window.prompt(`给这个输入框起个名字（留空恢复默认：${fallback}）`, b.alias || '');
-    } catch { /* cancelled */ }
-    if (name === null || name === false || name === undefined) return;
-    store.updateBinding(fp, { alias: String(name).trim().slice(0, 40) });
-    refreshBindings();
 }
 
 /** Re-renders the bindings block only, so unsaved form edits stay. */
@@ -742,15 +729,6 @@ async function onClick(e) {
         case 'unbind': {
             store.unbind(el.dataset.fp);
             return refreshBindings();
-        }
-        case 'binding-rename': return renameBinding(el.dataset.fp);
-        case 'binding-locate': {
-            if (locateBinding(el.dataset.fp)) {
-                // On phones the sheet covers the page; get out of the way so the field is visible.
-                if (isCompact()) closePanel();
-                return;
-            }
-            return toastr.info('这个输入框所在的插件窗口没打开。先打开插件，再点定位。', TITLE);
         }
         case 'binding-sync': {
             if (form && editorDraft(form).key !== (store.get(editId)?.key || '')) {
