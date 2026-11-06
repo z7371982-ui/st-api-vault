@@ -10,6 +10,7 @@ import { updateState, onUpdateState, checkForUpdates, runUpdate, showChangelog, 
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
     parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus, extRefId,
+    tagList, tagBarHtml, splitFavorites, hostQueues,
 } from './vault.js';
 
 const TITLE = '通用钥匙API管理器';
@@ -88,9 +89,19 @@ function activeTitle(p) {
 }
 
 function allTags() {
-    const count = new Map();
-    for (const p of store.profiles) for (const t of p.tags) count.set(t, (count.get(t) || 0) + 1);
-    return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+    return tagList(store.profiles);
+}
+
+/** The tag a filter is set to, or '' when the tag bar is off or the tag no longer exists. */
+function activeTag() {
+    return store.options.tagBar && allTags().includes(tag) ? tag : '';
+}
+
+/** Profiles the list shows right now: search and tag filter applied. */
+function shownProfiles() {
+    const t = activeTag();
+    const list = sortProfiles(searchProfiles(store.profiles, query));
+    return t ? list.filter(p => p.tags.includes(t)) : list;
 }
 
 // ---------- rendering ----------
@@ -183,9 +194,7 @@ function testSection(p) {
 }
 
 function listView() {
-    let list = sortProfiles(searchProfiles(store.profiles, query));
-    if (tag) list = list.filter(p => p.tags.includes(tag));
-    const tags = allTags();
+    const list = shownProfiles();
 
     const empty = store.profiles.length
         ? '<div class="avm-empty"><i class="fa-solid fa-magnifying-glass"></i><p>没有匹配的配置</p></div>'
@@ -209,10 +218,7 @@ function listView() {
             <button type="button" class="avm-btn" data-act="import" title="扫描酒馆和其他插件里已保存的 API，自己选要导入哪些"><i class="fa-solid fa-magnifying-glass-plus"></i><span class="avm-hide-sm">扫描</span></button>
             <button type="button" class="avm-btn is-primary" data-act="new" title="新建配置"><i class="fa-solid fa-plus"></i><span class="avm-hide-sm">新建</span></button>
         </div>
-        ${tags.length ? `<div class="avm-tags" role="group" aria-label="按标签筛选">
-            <button type="button" class="avm-tag-btn${tag ? '' : ' is-on'}" data-tag="">全部 ${store.profiles.length}</button>
-            ${tags.map(x => `<button type="button" class="avm-tag-btn${x === tag ? ' is-on' : ''}" data-tag="${esc(x)}">${esc(x)}</button>`).join('')}
-        </div>` : ''}
+        ${store.options.tagBar ? tagBarHtml(allTags(), activeTag(), store.profiles.length) : ''}
         <div class="avm-list">${list.length ? list.map(p => card(p)).join('') : empty}</div>
         ${store.profiles.length ? `<div class="avm-list-foot">
             <button type="button" class="avm-link-btn is-danger" data-act="clear-all"><i class="fa-solid fa-trash-can"></i>清空全部 ${store.profiles.length} 个配置</button>
@@ -346,6 +352,7 @@ function settingsView() {
             ${row('capture', '发现新密钥时提示保存', '在插件里手动粘贴了管理器没有的密钥，弹个提示，点一下就存起来')}
             ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
+            ${row('tagBar', '标签筛选栏', '在列表和填写弹窗的搜索框下面显示一排标签，点一下只看带这个标签的配置。标签在编辑配置的「标签」框里填，多个用逗号隔开')}
             <label class="avm-switch-row">
                 <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开通用钥匙API管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
                 <input type="checkbox" class="avm-switch" data-opt="fab" ${fabEnabled() ? 'checked' : ''}>
@@ -407,6 +414,7 @@ function go(next, id = null) {
     view = next;
     editId = id;
     probeState = null;
+    draftFavs = [];
     render({ force: true });
     root.querySelector('.avm-body').scrollTop = 0;
 }
@@ -466,6 +474,8 @@ async function saveForm(form) {
             console.warn('[API Vault] linking plugin settings failed', err);
         }
     }
+    // Models starred before the first save belong to the new profile.
+    if (!existing && draftFavs.length) data.favModels = draftFavs;
     const p = store.upsert({ ...data, id: editId || undefined });
     go('list');
 
@@ -586,11 +596,43 @@ function renderModelList() {
     const q = modelSheet.querySelector('[data-role="model-search"]').value.trim().toLowerCase();
     const shown = q ? models.filter(m => m.toLowerCase().includes(q)) : models;
     const cur = root.querySelector('[name="model"]')?.value.trim() || '';
+    const { fav, rest } = splitFavorites(shown, editorFavs());
+    const item = (m, starred) => `<li role="option" data-model="${esc(m)}" aria-selected="${m === cur}" class="${m === cur ? 'is-on' : ''}">
+        <span class="avm-model-name">${esc(m)}</span>
+        <button type="button" class="avm-model-fav${starred ? ' is-fav' : ''}" data-fav="${esc(m)}" title="${starred ? '取消收藏' : '收藏，排到最上面'}" aria-label="${starred ? '取消收藏' : '收藏'} ${esc(m)}" aria-pressed="${starred}"><i class="fa-${starred ? 'solid' : 'regular'} fa-star"></i></button>
+    </li>`;
+    const restShown = rest.slice(0, 300);
     modelSheet.querySelector('.avm-model-count').textContent = q ? `${shown.length} / ${models.length}` : `${models.length} 个`;
     modelSheet.querySelector('.avm-model-list').innerHTML = shown.length
-        ? shown.slice(0, 300).map(m => `<li role="option" data-model="${esc(m)}" aria-selected="${m === cur}" class="${m === cur ? 'is-on' : ''}">${esc(m)}</li>`).join('')
-            + (shown.length > 300 ? `<li class="avm-model-more">还有 ${shown.length - 300} 个，输入关键字筛选</li>` : '')
+        ? (fav.length ? `<li class="avm-model-group"><i class="fa-solid fa-star"></i>收藏</li>${fav.map(m => item(m, true)).join('')}` : '')
+            + (fav.length && restShown.length ? '<li class="avm-model-group">全部模型</li>' : '')
+            + restShown.map(m => item(m, false)).join('')
+            + (rest.length > 300 ? `<li class="avm-model-more">还有 ${rest.length - 300} 个，输入关键字筛选</li>` : '')
         : '<li class="avm-model-more">没有匹配的模型</li>';
+}
+
+// Starred models of a profile not saved yet live here until the first save.
+let draftFavs = [];
+
+function editorFavs() {
+    const p = editId && store.get(editId);
+    return p ? p.favModels : draftFavs;
+}
+
+function toggleFavModel(model) {
+    const list = editorFavs();
+    const next = list.includes(model) ? list.filter(m => m !== model) : [...list, model];
+    const p = editId && store.get(editId);
+    if (p) {
+        // Written straight onto the profile: starring is not an edit of the form and must not wait for 保存.
+        p.favModels = next;
+        ctx.saveSettingsDebounced();
+    } else {
+        draftFavs = next;
+    }
+    const scroll = modelSheet.querySelector('.avm-model-list').scrollTop;
+    renderModelList();
+    modelSheet.querySelector('.avm-model-list').scrollTop = scroll;
 }
 
 function openModelMenu() {
@@ -766,7 +808,61 @@ async function runCardTest(p) {
     }
 }
 
+let testingAll = false;
+
+/** The header button spins while a batch test runs. */
+function updateTestAllBtn() {
+    const btn = root?.querySelector('[data-act="test-all"]');
+    if (!btn) return;
+    btn.disabled = testingAll;
+    btn.querySelector('i').className = testingAll ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-stethoscope';
+}
+
+/**
+ * Tests every profile the list shows. Different sites run at the same time; several keys on one site
+ * go one after another. probe() has its own timeout, so a dead site ends as a failure instead of hanging.
+ */
+async function runTestAll() {
+    if (testingAll) return;
+    // An open editor may hold unsaved input; the results show up once the user goes back to the list.
+    if (view !== 'list' && view !== 'edit') go('list');
+    const list = shownProfiles().filter(p => !testing.has(p.id) && (p.url || p.key || (p.stRef && !p.stMissing)));
+    if (!list.length) return toastr.info('没有可以测试的配置', TITLE, { timeOut: 1600 });
+    testingAll = true;
+    updateTestAllBtn();
+    for (const p of list) testing.add(p.id);
+    render();
+    let ok = 0;
+    let bad = 0;
+    const one = async p => {
+        try {
+            const r = await probe(p);
+            if (!r.stale) ok++;
+        } catch (err) {
+            if (!err.stale) bad++;
+        } finally {
+            testing.delete(p.id);
+            render();
+        }
+    };
+    try {
+        await Promise.all(hostQueues(list).map(async queue => {
+            for (const p of queue) await one(p);
+        }));
+    } finally {
+        testingAll = false;
+        updateTestAllBtn();
+    }
+    const text = `测试完成：${ok} 个正常${bad ? `，${bad} 个失败` : ''}`;
+    toastr[bad ? 'warning' : 'success'](text, TITLE, { timeOut: 2600 });
+}
+
 async function onClick(e) {
+    const favBtn = e.target.closest('.avm-model-list [data-fav]');
+    if (favBtn) {
+        e.stopPropagation();
+        return toggleFavModel(favBtn.dataset.fav);
+    }
     const tagBtn = e.target.closest('[data-tag]');
     if (tagBtn) {
         tag = tagBtn.dataset.tag;
@@ -789,6 +885,7 @@ async function onClick(e) {
 
     switch (el.dataset.act) {
         case 'close': return closePanel();
+        case 'test-all': return runTestAll();
         case 'check-update': {
             el.disabled = true;
             const s = await checkForUpdates({ prompt: false });
@@ -1076,6 +1173,7 @@ export function initPanel(context) {
                 <div><div class="avm-brand-name">通用钥匙API管理器</div><div class="avm-brand-sub">点框 · 选配置 · 自动填</div></div>
             </div>
             <nav class="avm-head-actions">
+                <button type="button" class="avm-icon-btn" data-act="test-all" title="一键测试列表里显示的全部配置（只拉模型列表，不消耗额度）" aria-label="一键测试全部配置"><i class="fa-solid fa-stethoscope"></i></button>
                 <button type="button" class="avm-icon-btn" data-view-btn="import" title="从酒馆导入" aria-label="从酒馆导入"><i class="fa-solid fa-file-import"></i></button>
                 <button type="button" class="avm-icon-btn" data-view-btn="settings" title="设置" aria-label="设置"><i class="fa-solid fa-sliders"></i></button>
                 <button type="button" class="avm-icon-btn" data-act="close" title="关闭" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>

@@ -22,6 +22,8 @@ export function defaultSettings() {
             fabPos: null,
             // Read notice.json and the repo version from GitHub; only "major" notices pop up.
             notices: true,
+            // Row of tag buttons under the search box, in the panel list and the fill picker.
+            tagBar: false,
         },
     };
 }
@@ -81,6 +83,8 @@ export function createProfile(p = {}) {
         // hashes of keys this profile held before, so plugin fields still showing an old one can be refreshed
         prevKeys: Array.isArray(p.prevKeys) ? p.prevKeys.filter(h => typeof h === 'string' && h).slice(-10) : [],
         models: Array.isArray(p.models) ? p.models.filter(m => typeof m === 'string' && m).slice(0, 2000) : [],
+        // models starred in the model list of this profile; they are listed first
+        favModels: Array.isArray(p.favModels) ? [...new Set(p.favModels.filter(m => typeof m === 'string' && m))].slice(0, 200) : [],
         modelsAt: num(p.modelsAt, 0),
         health: normHealth(p.health),
         createdAt: num(p.createdAt, now),
@@ -233,6 +237,41 @@ export function searchProfiles(profiles, query) {
 
 export function sortProfiles(profiles) {
     return [...profiles].sort((a, b) => (b.usedAt - a.usedAt) || (b.createdAt - a.createdAt));
+}
+
+/** Tags in use, most used first. */
+export function tagList(profiles) {
+    const count = new Map();
+    for (const p of profiles) for (const t of p.tags) count.set(t, (count.get(t) || 0) + 1);
+    return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+}
+
+/** Wrapping row of tag filter buttons, used by the panel list and the fill picker. */
+export function tagBarHtml(tags, current, total) {
+    if (!tags.length) return '';
+    return `<div class="avm-tags" role="group" aria-label="按标签筛选">
+        <button type="button" class="avm-tag-btn${current ? '' : ' is-on'}" data-tag="" aria-pressed="${!current}">全部${total ? ` ${total}` : ''}</button>
+        ${tags.map(x => `<button type="button" class="avm-tag-btn${x === current ? ' is-on' : ''}" data-tag="${esc(x)}" aria-pressed="${x === current}">${esc(x)}</button>`).join('')}
+    </div>`;
+}
+
+/** Splits a model list into the starred ones and the rest, both in list order. */
+export function splitFavorites(models, favs) {
+    const set = new Set(favs);
+    return { fav: models.filter(m => set.has(m)), rest: models.filter(m => !set.has(m)) };
+}
+
+/**
+ * Groups profiles by host for a batch test: different sites are tested at the same time,
+ * several keys on one site one after another, so that site does not see a burst of requests.
+ */
+export function hostQueues(profiles) {
+    const groups = new Map();
+    for (const p of profiles) {
+        const host = hostOf(p.url) || `#${p.id}`;
+        groups.set(host, [...(groups.get(host) || []), p]);
+    }
+    return [...groups.values()];
 }
 
 // Stops at CJK text and full-width punctuation, so "https://a.com/v1密钥：sk-..." splits cleanly.

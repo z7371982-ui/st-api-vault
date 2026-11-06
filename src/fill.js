@@ -8,7 +8,7 @@ import {
 import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
-import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey } from './vault.js';
+import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey, tagList, tagBarHtml } from './vault.js';
 
 const TITLE = '通用钥匙API管理器';
 // ST's own key inputs offer saved secret ids (UUIDs) in a datalist; those are not keys.
@@ -23,6 +23,7 @@ let pill = null;
 let pillShown = false;
 let pop = null;
 let popIndex = 0;
+let popTag = ''; // tag filter in the picker, when the tag bar is on
 let filling = false;
 let frame = 0;
 let backdrop = null;
@@ -584,6 +585,7 @@ function ensurePop() {
                 <i class="fa-solid fa-magnifying-glass"></i>
                 <input type="text" placeholder="搜索名称、地址、标签" autocomplete="off" spellcheck="false" aria-label="搜索配置">
             </label>
+            <div class="avm-pop-tags"></div>
         </div>
         <div class="avm-pop-list" role="listbox"></div>
         <div class="avm-pop-foot">
@@ -600,6 +602,12 @@ function ensurePop() {
         if (e.target !== input) e.preventDefault();
     });
     pop.addEventListener('click', e => {
+        const tagBtn = e.target.closest('[data-tag]');
+        if (tagBtn) {
+            popTag = tagBtn.dataset.tag;
+            popIndex = 0;
+            return renderPopList();
+        }
         const row = e.target.closest('.avm-row');
         if (row && !row.classList.contains('is-disabled')) return pick(row.dataset.id);
         const act = e.target.closest('[data-act]')?.dataset.act;
@@ -622,16 +630,24 @@ function popRows() {
     const t = currentTarget();
     const q = pop.querySelector('input').value;
     const boundId = t?.binding?.profileId;
+    const tag = activePopTag();
     const list = sortProfiles(searchProfiles(store.profiles, q))
+        .filter(p => !tag || p.tags.includes(tag))
         .sort((a, b) => (b.id === boundId) - (a.id === boundId));
     const usable = list.filter(p => canFill(p, t.kind));
     const unusable = list.filter(p => !canFill(p, t.kind));
     return { t, usable, unusable, boundId };
 }
 
+/** The picker's tag filter, or '' when the tag bar is off or the tag no longer exists. */
+function activePopTag() {
+    return store.options.tagBar && tagList(store.profiles).includes(popTag) ? popTag : '';
+}
+
 function renderPopList() {
     const t = currentTarget();
     if (!t || !pop) return closePop(false);
+    pop.querySelector('.avm-pop-tags').innerHTML = store.options.tagBar ? tagBarHtml(tagList(store.profiles), activePopTag(), 0) : '';
     const { usable, unusable, boundId } = popRows();
     pop.querySelector('.avm-pop-title').innerHTML =
         `<span class="avm-chip">${KIND_LABEL[t.kind]}</span><span class="avm-pop-scope">${esc(t.scope || t.label || '当前输入框')}</span>`;
@@ -705,6 +721,7 @@ function openPop() {
     pop.removeAttribute('style');
     const sheet = updatePopLayout();
     popIndex = 0;
+    popTag = '';
     const input = pop.querySelector('input');
     input.value = '';
     renderPopList();

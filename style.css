@@ -388,29 +388,49 @@
     box-shadow: none;
 }
 
+/* Wraps onto more lines instead of scrolling sideways, so every tag stays visible. */
 .avm-tags {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 2px;
-    scrollbar-width: none;
 }
 
 .avm-tag-btn {
     flex: none;
-    padding: 4px 10px;
-    border: 1px solid var(--avm-line);
+    max-width: 100%;
+    padding: 4px 12px;
+    border: 1px solid var(--avm-accent);
+    border: 1px solid color-mix(in srgb, var(--avm-accent) 55%, transparent);
     border-radius: 999px;
     background: transparent;
-    font-size: 0.8em;
-    color: var(--avm-muted);
+    font-size: 0.85em;
+    line-height: 1.4;
+    color: var(--avm-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.avm-tag-btn:hover {
+    background: var(--avm-faint);
 }
 
 .avm-tag-btn.is-on {
-    border-color: transparent;
+    border-color: var(--avm-accent);
     background: var(--avm-accent-soft);
-    color: var(--avm-fg);
+    font-weight: 600;
+}
+
+.avm-pop-tags:empty {
+    display: none;
+}
+
+.avm-pop-tags .avm-tags {
+    max-height: 72px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 /* ---------- cards ---------- */
@@ -987,6 +1007,67 @@
     background: transparent;
 }
 
+/* Rows holding a model: name on the left, the star on the right. */
+.avm-model-list li[data-model] {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-right: 4px;
+}
+
+.avm-model-name {
+    flex: 1;
+    min-width: 0;
+}
+
+.avm-model-fav {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--avm-muted);
+    cursor: pointer;
+}
+
+.avm-model-fav:hover {
+    background: var(--avm-faint);
+}
+
+.avm-model-fav.is-fav {
+    color: #e8b931;
+}
+
+.avm-model-list .avm-model-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px 4px;
+    font-size: 0.78em;
+    font-weight: 600;
+    color: var(--avm-muted);
+    cursor: default;
+}
+
+.avm-model-list .avm-model-group:hover {
+    background: transparent;
+}
+
+.avm-model-group .fa-star {
+    color: #e8b931;
+}
+
+/* A rule above "全部模型" separates it from the starred group. */
+.avm-model-list .avm-model-group + li[data-model] ~ .avm-model-group {
+    margin-top: 6px;
+    border-top: 1px solid var(--avm-line);
+    border-radius: 0;
+}
+
 @media (max-width: 768px) {
     .avm-model-sheet {
         padding-bottom: calc(14px + env(safe-area-inset-bottom));
@@ -994,6 +1075,15 @@
 
     .avm-model-list li {
         padding: 13px 12px;
+    }
+
+    .avm-model-list li[data-model] {
+        padding: 6px 4px 6px 12px;
+    }
+
+    .avm-model-fav {
+        width: 40px;
+        height: 40px;
     }
 }
 
