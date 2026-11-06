@@ -166,7 +166,7 @@ async function runCheck(prompt) {
 export function updateBadges() {
     const host = document.querySelector('#avm_settings .inline-drawer-header');
     if (!host) return;
-    let el = host.querySelector(':scope > .avm-new');
+    let el = host.querySelector('.avm-new');
     if (!state.updatable) {
         el?.remove();
         return;
@@ -175,10 +175,10 @@ export function updateBadges() {
         el = document.createElement('span');
         el.className = 'avm-new';
         el.textContent = 'New!';
-        // The drawer toggle is the whole header; keep the mark from looking like a separate button.
-        // (after() returns undefined, so `?? prepend` would have moved the mark to the front again.)
+        // ST lays the header out with space-between, so a third child would be pushed to the middle
+        // and the title with it. Inside the title the mark sits right after the name, like other plugins.
         const title = host.querySelector('b');
-        if (title) title.after(el);
+        if (title) title.append(el);
         else host.prepend(el);
     }
     el.title = `有新版本${state.remote ? ` ${state.remote}` : ''}，打开通用钥匙API管理器的设置页点「更新」`;
