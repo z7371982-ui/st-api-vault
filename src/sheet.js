@@ -42,8 +42,8 @@ export function createFab({ onTap, getPos, setPos }) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'avm-root avm-fab';
-    btn.setAttribute('aria-label', '打开通用钥匙');
-    btn.title = '通用钥匙（可拖动）';
+    btn.setAttribute('aria-label', '打开通用钥匙API管理器');
+    btn.title = '通用钥匙API管理器（可拖动）';
     btn.innerHTML = '<i class="fa-solid fa-key"></i>';
 
     const size = () => btn.offsetWidth || 48;

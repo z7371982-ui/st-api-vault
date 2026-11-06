@@ -7,7 +7,7 @@
 import { store } from './store.js';
 import { compareVersions, normNotices, majorNoticeToPrompt, renderNotice, esc } from './vault.js';
 
-const TITLE = '通用钥匙';
+const TITLE = '通用钥匙API管理器';
 const TIMEOUT = 8000;
 // public/scripts/extensions/third-party/<folder>/src/update.js -> "<folder>"
 const FOLDER = decodeURIComponent(new URL('..', import.meta.url).pathname.split('/').filter(Boolean).pop() || '');
@@ -146,7 +146,7 @@ export function updateBadges() {
         // The drawer toggle is the whole header; keep the mark from looking like a separate button.
         host.querySelector('b')?.after(el) ?? host.prepend(el);
     }
-    el.title = `有新版本${state.remote ? ` ${state.remote}` : ''}，打开通用钥匙的设置页点「更新」`;
+    el.title = `有新版本${state.remote ? ` ${state.remote}` : ''}，打开通用钥匙API管理器的设置页点「更新」`;
 }
 
 // ---------- popups ----------

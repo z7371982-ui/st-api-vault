@@ -288,7 +288,7 @@ export async function autoImport({ silent = false } = {}) {
     if (!fresh.length) return;
     const { added } = importItems(fresh);
     if (added && !silent) {
-        toastr.info(`已从酒馆读取 ${added} 个 API 配置`, '通用钥匙', { timeOut: 2500 });
+        toastr.info(`已从酒馆读取 ${added} 个 API 配置`, '通用钥匙API管理器', { timeOut: 2500 });
     }
 }
 

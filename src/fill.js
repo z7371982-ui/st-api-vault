@@ -10,7 +10,7 @@ import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey } from './vault.js';
 
-const TITLE = '通用钥匙';
+const TITLE = '通用钥匙API管理器';
 // ST's own key inputs offer saved secret ids (UUIDs) in a datalist; those are not keys.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // ST's own reverse proxy URL / password inputs. They mirror the selected proxy preset.
@@ -470,8 +470,8 @@ function ensurePill() {
     pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'avm-root avm-pill';
-    pill.title = isTouch() ? '通用钥匙' : '通用钥匙 · Alt+K';
-    pill.setAttribute('aria-label', '从通用钥匙选择');
+    pill.title = isTouch() ? '通用钥匙API管理器' : '通用钥匙API管理器 · Alt+K';
+    pill.setAttribute('aria-label', '从通用钥匙API管理器选择');
     // Keep focus in the field so the target does not change.
     pill.addEventListener('mousedown', e => e.preventDefault());
     pill.addEventListener('pointerdown', () => {
@@ -588,7 +588,7 @@ function ensurePop() {
         <div class="avm-pop-list" role="listbox"></div>
         <div class="avm-pop-foot">
             <button type="button" data-act="capture"><i class="fa-solid fa-floppy-disk"></i>保存当前填写</button>
-            <button type="button" data-act="panel"><i class="fa-solid fa-table-cells-large"></i>打开通用钥匙</button>
+            <button type="button" data-act="panel"><i class="fa-solid fa-table-cells-large"></i>打开通用钥匙API管理器</button>
         </div>`;
     const input = pop.querySelector('input');
     input.addEventListener('input', () => {

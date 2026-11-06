@@ -12,7 +12,7 @@ import {
     parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus, extRefId,
 } from './vault.js';
 
-const TITLE = '通用钥匙';
+const TITLE = '通用钥匙API管理器';
 
 let ctx = null;
 let root = null;
@@ -347,13 +347,13 @@ function settingsView() {
             ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
             <label class="avm-switch-row">
-                <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开通用钥匙，按住可以拖到任意位置，松手会贴到边上</small></span>
+                <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开通用钥匙API管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
                 <input type="checkbox" class="avm-switch" data-opt="fab" ${fabEnabled() ? 'checked' : ''}>
             </label>
             <div class="avm-note"><i class="fa-regular fa-keyboard"></i><div>
                 ${isCompact() || isTouch()
-                    ? '<b>手机上</b>：点进插件的地址或密钥框，框边会出现钥匙按钮，点它从底部弹出配置列表；屏幕边上的悬浮钥匙可以拖动，点它打开通用钥匙。<br>'
-                    : '<b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开通用钥匙。<br>'}
+                    ? '<b>手机上</b>：点进插件的地址或密钥框，框边会出现钥匙按钮，点它从底部弹出配置列表；屏幕边上的悬浮钥匙可以拖动，点它打开通用钥匙API管理器。<br>'
+                    : '<b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开通用钥匙API管理器。<br>'}
                 配置保存在酒馆的扩展设置里（settings.json），和酒馆本身的设置一起备份。
             </div></div>
             ${updateSection()}
@@ -1073,7 +1073,7 @@ export function initPanel(context) {
             <div class="avm-grabber" aria-hidden="true"></div>
             <div class="avm-brand">
                 <span class="avm-logo"><i class="fa-solid fa-vault"></i></span>
-                <div><div class="avm-brand-name">通用钥匙</div><div class="avm-brand-sub">点框 · 选配置 · 自动填</div></div>
+                <div><div class="avm-brand-name">通用钥匙API管理器</div><div class="avm-brand-sub">点框 · 选配置 · 自动填</div></div>
             </div>
             <nav class="avm-head-actions">
                 <button type="button" class="avm-icon-btn" data-view-btn="import" title="从酒馆导入" aria-label="从酒馆导入"><i class="fa-solid fa-file-import"></i></button>
