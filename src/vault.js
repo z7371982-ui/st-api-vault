@@ -20,6 +20,8 @@ export function defaultSettings() {
             // Floating key button: on by default on touch screens, where there is no Alt+K.
             fab: 'auto',
             fabPos: null,
+            // Read notice.json and the repo version from GitHub; only "major" notices pop up.
+            notices: true,
         },
     };
 }
@@ -304,4 +306,74 @@ export function initials(name) {
 
 export function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---------- versions and announcements (notice.json) ----------
+
+/** Compares dotted versions numerically: 1 when a is newer, -1 when older, 0 when equal. */
+export function compareVersions(a, b) {
+    const pa = String(a || '').split(/[.-]/).map(n => parseInt(n, 10) || 0);
+    const pb = String(b || '').split(/[.-]/).map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const d = (pa[i] || 0) - (pb[i] || 0);
+        if (d) return d > 0 ? 1 : -1;
+    }
+    return 0;
+}
+
+/** notice.json -> clean list, newest version first. Entries without a version are dropped. */
+export function normNotices(raw) {
+    const list = Array.isArray(raw?.notices) ? raw.notices : [];
+    return list
+        .filter(n => n && typeof n === 'object' && str(n.version))
+        .map(n => ({
+            id: str(n.id) || str(n.version),
+            version: str(n.version),
+            major: n.major === true || n.level === 'major',
+            title: str(n.title),
+            date: str(n.date),
+            content: typeof n.content === 'string' ? n.content : '',
+        }))
+        .sort((a, b) => compareVersions(b.version, a.version));
+}
+
+/** The newest major notice for a version above the installed one that the user has not turned down. */
+export function majorNoticeToPrompt(notices, localVersion, dismissed = []) {
+    return notices.find(n => n.major && compareVersions(n.version, localVersion) > 0 && !dismissed.includes(n.id)) || null;
+}
+
+/** The major notice of the version now installed, shown once after updating to it. */
+export function noticeForInstalled(notices, localVersion, shown = []) {
+    return notices.find(n => n.major && compareVersions(n.version, localVersion) === 0 && !shown.includes(n.id)) || null;
+}
+
+/**
+ * A small, safe subset of Markdown for announcements: "#" headings, "-" lists, **bold** and
+ * [links](https://...). Everything is escaped first, so a notice cannot carry HTML or scripts.
+ */
+export function renderNotice(md) {
+    const inline = s => esc(s)
+        .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    const out = [];
+    let list = false;
+    for (const raw of String(md || '').split(/\r?\n/)) {
+        const line = raw.trim();
+        const item = line.match(/^[-*]\s+(.*)$/);
+        if (!item && list) {
+            out.push('</ul>');
+            list = false;
+        }
+        if (!line) continue;
+        if (item) {
+            if (!list) out.push('<ul>');
+            list = true;
+            out.push(`<li>${inline(item[1])}</li>`);
+            continue;
+        }
+        const h = line.match(/^#{1,4}\s+(.*)$/);
+        out.push(h ? `<h4>${inline(h[1])}</h4>` : `<p>${inline(line)}</p>`);
+    }
+    if (list) out.push('</ul>');
+    return out.join('');
 }

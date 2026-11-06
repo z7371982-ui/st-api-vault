@@ -6,6 +6,7 @@ import { initSync, autoImport, scheduleImport, scheduleReconcile } from './src/s
 import { initProbe } from './src/probe.js';
 import { initFill } from './src/fill.js';
 import { initPanel, openPanel, togglePanel } from './src/panel.js';
+import { initUpdates, updateBadges } from './src/update.js';
 
 function addMenuEntry() {
     const menu = document.getElementById('extensionsMenu');
@@ -69,6 +70,9 @@ async function init() {
     addMenuEntry();
     addSettingsDrawer();
     registerSlashCommand(ctx);
+    initUpdates(ctx);
+    // The wand menu is rebuilt by ST at times; put the mark back on our entry.
+    document.getElementById('extensionsMenuButton')?.addEventListener('click', () => setTimeout(updateBadges, 0));
 
     const { eventSource, eventTypes } = ctx;
     const on = (name, fn) => eventTypes?.[name] && eventSource.on(eventTypes[name], fn);

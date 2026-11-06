@@ -6,6 +6,7 @@ import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reco
 import { probe } from './probe.js';
 import { KIND_LABEL, syncBinding, syncProfileFields } from './fill.js';
 import { isCompact, isTouch, swipeToClose, trackViewport, createFab } from './sheet.js';
+import { updateState, onUpdateState, checkForUpdates, runUpdate, showChangelog, updateBadges } from './update.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
     parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus, extRefId,
@@ -247,7 +248,7 @@ function editView() {
             </label>
             <label class="avm-label">密钥
                 <span class="avm-input-group">
-                    <input name="key" type="password" value="${esc(v.key)}" placeholder="${esc(keyPlaceholder)}" spellcheck="false" autocomplete="new-password">
+                    <input name="key" type="text" class="avm-masked" value="${esc(v.key)}" placeholder="${esc(keyPlaceholder)}" spellcheck="false" autocomplete="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other">
                     <button type="button" class="avm-icon-btn" data-act="toggle-key" title="显示 / 隐藏" aria-label="显示或隐藏密钥"><i class="fa-solid fa-eye"></i></button>
                     ${!v.key && v.stRef ? '<button type="button" class="avm-icon-btn" data-act="reveal" title="尝试从酒馆读取原文" aria-label="从酒馆读取密钥原文"><i class="fa-solid fa-unlock"></i></button>' : ''}
                 </span>
@@ -355,7 +356,29 @@ function settingsView() {
                     : '<b>Alt + K</b>：在输入框里按，打开快速选择；在别处按，打开通用钥匙。<br>'}
                 配置保存在酒馆的扩展设置里（settings.json），和酒馆本身的设置一起备份。
             </div></div>
+            ${updateSection()}
         </div>`;
+}
+
+/** Version, update button, and the announcement switch / changelog on the settings page. */
+function updateSection() {
+    const s = updateState();
+    const status = !s.checked ? '正在检查…'
+        : s.updatable ? `有新版本${s.remote ? ` ${esc(s.remote)}` : ''}`
+            : s.error ? `检查失败：${esc(s.error)}` : '已是最新';
+    return `<div class="avm-update">
+        <div class="avm-update-head">
+            <span><b>版本 ${esc(s.local || '—')}</b><small>${status}</small></span>
+            ${s.updatable
+                ? '<button type="button" class="avm-btn is-primary" data-act="run-update"><i class="fa-solid fa-download"></i>更新</button>'
+                : '<button type="button" class="avm-btn" data-act="check-update"><i class="fa-solid fa-arrows-rotate"></i>检查更新</button>'}
+            <button type="button" class="avm-btn" data-act="changelog"><i class="fa-solid fa-scroll"></i>更新日志</button>
+        </div>
+        <label class="avm-switch-row">
+            <span><b>接收大更新公告</b><small>有新版本时扩展设置抽屉标题旁显示 New!；只有大更新才会弹窗提示。会从 GitHub 读取版本和公告，不上传任何数据</small></span>
+            <input type="checkbox" class="avm-switch" data-opt="notices" ${store.options.notices !== false ? 'checked' : ''}>
+        </label>
+    </div>`;
 }
 
 export function render({ force = false } = {}) {
@@ -766,6 +789,18 @@ async function onClick(e) {
 
     switch (el.dataset.act) {
         case 'close': return closePanel();
+        case 'check-update': {
+            el.disabled = true;
+            const s = await checkForUpdates({ prompt: false });
+            toastr[s.updatable ? 'info' : 'success'](s.updatable ? `有新版本${s.remote ? ` ${esc(s.remote)}` : ''}` : (s.error ? `检查失败：${esc(s.error)}` : '已是最新版本'), TITLE, { timeOut: 2000 });
+            return view === 'settings' && render();
+        }
+        case 'run-update': {
+            el.disabled = true;
+            if (!(await runUpdate())) el.disabled = false;
+            return;
+        }
+        case 'changelog': return showChangelog();
         case 'new': return go('edit', null);
         case 'edit': return go('edit', id);
         case 'back': return go('list');
@@ -794,8 +829,9 @@ async function onClick(e) {
         case 'toggle-key': {
             const input = form?.querySelector('[name="key"]');
             if (!input) return;
-            input.type = input.type === 'password' ? 'text' : 'password';
-            el.querySelector('i').className = `fa-solid ${input.type === 'password' ? 'fa-eye' : 'fa-eye-slash'}`;
+            // Masked with CSS, not type="password": a password field makes the browser offer to save it.
+            const masked = input.classList.toggle('avm-masked');
+            el.querySelector('i').className = `fa-solid ${masked ? 'fa-eye' : 'fa-eye-slash'}`;
             return;
         }
         case 'reveal': {
@@ -1090,6 +1126,11 @@ export function initPanel(context) {
             const form = root.querySelector('[data-role="editor"]');
             if (form && !testedDraftMatches(form)) invalidateEditorTest();
         }
+    });
+    // The update check finishes in the background; refresh the marks and an open settings page.
+    onUpdateState(() => {
+        updateBadges();
+        if (view === 'settings') render();
     });
     updateFab();
 }
