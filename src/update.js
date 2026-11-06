@@ -9,12 +9,21 @@ import { compareVersions, normNotices, majorNoticeToPrompt, renderNotice, esc } 
 
 const TITLE = '通用钥匙API管理器';
 const TIMEOUT = 8000;
+// A page left open for hours must still notice a new version, so the check is repeated
+// when the extensions panel is opened, and once an hour, but never more often than this.
+// Only the first check asks ST's git endpoint (it runs `git fetch` in the extension folder);
+// later ones just read manifest.json from GitHub, so they can never collide with an update
+// started from ST's "管理扩展" (two git operations at once make that update fail).
+const RECHECK_MS = 10 * 60 * 1000;
 // public/scripts/extensions/third-party/<folder>/src/update.js -> "<folder>"
 const FOLDER = decodeURIComponent(new URL('..', import.meta.url).pathname.split('/').filter(Boolean).pop() || '');
 
 let ctx = null;
 let git = null;
-const state = { local: '', remote: '', updatable: false, notices: [], checked: false, error: '' };
+let gitAsked = false;
+let gitLocal = ''; // installed version at the time ST's git endpoint was asked
+const state = { local: '', remote: '', updatable: false, notices: [], checked: false, error: '', busy: false, at: 0 };
+let running = null;
 const listeners = new Set();
 
 export const updateState = () => state;
@@ -91,14 +100,35 @@ async function gitInfo() {
     return null;
 }
 
-/** Checks the repo. Also run from the settings page ("检查更新"). */
-export async function checkForUpdates({ prompt = true } = {}) {
+/** Checks the repo. Also run from the settings page ("检查更新"). One check runs at a time. */
+export function checkForUpdates({ prompt = true } = {}) {
+    running ||= runCheck(prompt).finally(() => {
+        running = null;
+    });
+    return running;
+}
+
+/** Checks again when the last check is older than `ms`, e.g. when the user opens the extensions panel. */
+export function recheckIfOld(ms = RECHECK_MS) {
+    if (running || (state.at && Date.now() - state.at < ms)) return;
+    checkForUpdates().catch(err => console.warn('[API Vault] update check failed', err));
+}
+
+async function runCheck(prompt) {
     state.error = '';
+    state.busy = true;
+    emit();
     try {
         const local = await getJson(new URL('../manifest.json', import.meta.url).href).catch(() => null);
         state.local = String(local?.version || '');
-        git = await gitInfo();
-        state.updatable = !!git && git.isUpToDate === false;
+        if (!gitAsked) {
+            gitAsked = true;
+            git = await gitInfo();
+            gitLocal = state.local;
+        }
+        // ST's "behind origin" answer holds while the installed version is the one it was given for;
+        // after an update from "管理扩展" (no reload yet) only the version numbers below count.
+        state.updatable = !!git && git.isUpToDate === false && state.local === gitLocal;
         const gh = githubRepo(git?.remoteUrl);
         if (gh) {
             const branch = git.currentBranchName || 'main';
@@ -119,6 +149,8 @@ export async function checkForUpdates({ prompt = true } = {}) {
         state.error = String(err?.message || err);
     }
     state.checked = true;
+    state.busy = false;
+    state.at = Date.now();
     updateBadges();
     emit();
     if (prompt && store.options.notices !== false) await maybePrompt();
@@ -144,7 +176,10 @@ export function updateBadges() {
         el.className = 'avm-new';
         el.textContent = 'New!';
         // The drawer toggle is the whole header; keep the mark from looking like a separate button.
-        host.querySelector('b')?.after(el) ?? host.prepend(el);
+        // (after() returns undefined, so `?? prepend` would have moved the mark to the front again.)
+        const title = host.querySelector('b');
+        if (title) title.after(el);
+        else host.prepend(el);
     }
     el.title = `有新版本${state.remote ? ` ${state.remote}` : ''}，打开通用钥匙API管理器的设置页点「更新」`;
 }
@@ -222,5 +257,10 @@ export async function showChangelog() {
 export function initUpdates(context) {
     ctx = context;
     // Network checks run after startup work, and never block it.
-    setTimeout(() => checkForUpdates().catch(err => console.warn('[API Vault] update check failed', err)), 6000);
+    setTimeout(() => recheckIfOld(0), 6000);
+    // Opening ST's extensions panel is when the "New!" mark is looked for, so check again then.
+    document.addEventListener('click', e => {
+        if (e.target.closest?.('#extensions-settings-button')) recheckIfOld();
+    }, true);
+    setInterval(() => recheckIfOld(), 60 * 60 * 1000);
 }

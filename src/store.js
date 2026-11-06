@@ -7,7 +7,7 @@ const listeners = new Set();
 export const store = {
     init(context) {
         ctx = context;
-        ctx.extensionSettings[MODULE] = migrate(ctx.extensionSettings[MODULE]);
+        ctx.extensionSettings[MODULE] = migrate(ctx.extensionSettings[MODULE], Object.keys(ctx.extensionSettings));
     },
 
     get settings() {

@@ -340,7 +340,8 @@ export function captureFrom(el = target?.el) {
         return dup;
     }
     const scope = scopeTitle(el);
-    const p = store.upsert({ name: guessName(url, scope), url, key, tags: scope ? [scope] : [] });
+    // No automatic tag: the window title only cluttered the tag bar. Tags are what the user types.
+    const p = store.upsert({ name: guessName(url, scope), url, key, tags: [] });
     const entries = [bindingEntry(el, kind, p.id)];
     if (partner) entries.push(bindingEntry(partner, other(kind), p.id));
     const bindings = entries.filter(Boolean);

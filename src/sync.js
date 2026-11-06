@@ -257,7 +257,8 @@ export function importItems(items) {
             syncTarget: '',
             syncedHash: it.key && it.stRef ? hashKey(it.key) : '',
             extRefs: it.extRefs || [],
-            tags: [it.source],
+            // Only "酒馆" / "反向代理" make useful tags; a plugin's settings id ("st-chatu8") does not.
+            tags: [ST_SOURCE, PROXY_SOURCE].includes(it.source) ? [it.source] : [],
         });
         claimExtRefs(created, it.extRefs);
         added++;

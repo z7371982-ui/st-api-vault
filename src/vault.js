@@ -4,7 +4,7 @@ export const MODULE = 'apiVault';
 
 export function defaultSettings() {
     return {
-        version: 3,
+        version: 4,
         profiles: [],
         // fingerprint -> { profileId, kind, scope, label, at }
         bindings: {},
@@ -28,7 +28,11 @@ export function defaultSettings() {
     };
 }
 
-export function migrate(raw) {
+/**
+ * @param {object} raw saved settings
+ * @param {string[]} extIds top-level keys of ST's extension_settings, i.e. other plugins' ids
+ */
+export function migrate(raw, extIds = []) {
     const base = defaultSettings();
     if (!raw || typeof raw !== 'object') return base;
     const options = { ...base.options, ...(raw.options && typeof raw.options === 'object' ? raw.options : {}) };
@@ -39,8 +43,17 @@ export function migrate(raw) {
     // slot only because of that old default go back to the preset route (masked-only keys keep working
     // through their stRef in syncToST).
     if (!(raw.version >= 3)) profiles = profiles.map(p => ({ ...p, syncTarget: '' }));
+    // Up to v3 a scan tagged each import with the plugin's settings id ("baibai_image", "st-chatu8",
+    // "variables"), which only clutters the tag bar. Drop those once; tags the user typed stay.
+    if (!(raw.version >= 4)) {
+        const ids = new Set(extIds.filter(id => id !== MODULE));
+        profiles = profiles.map(p => {
+            const sources = new Set(p.extRefs.map(r => r.source));
+            return { ...p, tags: p.tags.filter(t => !ids.has(t) && !sources.has(t)) };
+        });
+    }
     return {
-        version: 3,
+        version: 4,
         profiles,
         bindings: raw.bindings && typeof raw.bindings === 'object' ? { ...raw.bindings } : {},
         seenRefs: Array.isArray(raw.seenRefs) ? raw.seenRefs.filter(x => typeof x === 'string') : [],
