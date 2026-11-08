@@ -370,9 +370,10 @@ function settingsView() {
 /** Version, update button, and the announcement switch / changelog on the settings page. */
 function updateSection() {
     const s = updateState();
-    const status = !s.checked ? '正在检查…'
-        : s.updatable ? `有新版本${s.remote ? ` ${esc(s.remote)}` : ''}`
-            : s.error ? `检查失败：${esc(s.error)}` : '已是最新';
+    const status = s.busy ? '正在检查…'
+        : s.error ? `检查失败：${esc(s.error)}`
+            : s.deferred || !s.checked ? '尚未完成检查，点击「检查更新」重试'
+                : s.updatable ? `有新版本${s.remote ? ` ${esc(s.remote)}` : ''}` : '已是最新';
     return `<div class="avm-update">
         <div class="avm-update-head">
             <span><b>版本 ${esc(s.local || '—')}</b><small>${status}</small></span>
@@ -888,8 +889,8 @@ async function onClick(e) {
         case 'test-all': return runTestAll();
         case 'check-update': {
             el.disabled = true;
-            const s = await checkForUpdates({ prompt: false });
-            toastr[s.updatable ? 'info' : 'success'](s.updatable ? `有新版本${s.remote ? ` ${esc(s.remote)}` : ''}` : (s.error ? `检查失败：${esc(s.error)}` : '已是最新版本'), TITLE, { timeOut: 2000 });
+            const s = await checkForUpdates({ prompt: false, manual: true });
+            toastr[s.error ? 'error' : s.updatable ? 'info' : 'success'](s.error ? `检查失败：${esc(s.error)}` : s.updatable ? `有新版本${s.remote ? ` ${esc(s.remote)}` : ''}` : '已是最新版本', TITLE, { timeOut: s.error ? 8000 : 2000 });
             return view === 'settings' && render();
         }
         case 'run-update': {

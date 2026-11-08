@@ -2,8 +2,8 @@
 //   - "New!" on the extensions-panel drawer title while the repo has a newer version; gone once updated.
 //   - A popup offering the update only for versions marked `"major": true` in notice.json.
 //   - Nothing at all after updating.
-// notice.json is read from the repo (raw.githubusercontent.com, then jsDelivr). If both fail,
-// nothing is shown and nothing is reported: the extension works the same offline.
+// Automatic checks read public files from the confirmed install or bundled release source.
+// Failures stay quiet; manual checks discover the repository and report the reason.
 import { store } from './store.js';
 import { compareVersions, normNotices, majorNoticeToPrompt, renderNotice, esc } from './vault.js';
 
@@ -11,19 +11,20 @@ const TITLE = '通用钥匙API管理器';
 const TIMEOUT = 8000;
 // A page left open for hours must still notice a new version, so the check is repeated
 // when the extensions panel is opened, and once an hour, but never more often than this.
-// Only the first check asks ST's git endpoint (it runs `git fetch` in the extension folder);
-// later ones just read manifest.json from GitHub, so they can never collide with an update
-// started from ST's "管理扩展" (two git operations at once make that update fail).
+// Cache the first successful git lookup (ST runs `git fetch` in the extension folder).
+// Failed lookups can be retried; after success, later checks only read GitHub files
+// to avoid repeating git operations alongside ST's "管理扩展" updater.
 const RECHECK_MS = 10 * 60 * 1000;
 // public/scripts/extensions/third-party/<folder>/src/update.js -> "<folder>"
 const FOLDER = decodeURIComponent(new URL('..', import.meta.url).pathname.split('/').filter(Boolean).pop() || '');
 
 let ctx = null;
 let git = null;
-let gitAsked = false;
 let gitLocal = ''; // installed version at the time ST's git endpoint was asked
-const state = { local: '', remote: '', updatable: false, notices: [], checked: false, error: '', busy: false, at: 0 };
+const state = { local: '', remote: '', updatable: false, notices: [], checked: false, deferred: false, error: '', busy: false, at: 0 };
 let running = null;
+let runningManual = false;
+let queuedManual = null;
 const listeners = new Set();
 
 export const updateState = () => state;
@@ -60,8 +61,17 @@ function timeout(ms) {
 
 async function getJson(url, init = {}) {
     const res = await fetch(url, { cache: 'no-store', signal: timeout(TIMEOUT), ...init });
-    if (!res.ok) throw new Error(String(res.status));
+    if (!res.ok) {
+        const detail = String(url).startsWith('/api/extensions/') ? (await res.text().catch(() => '')).trim() : '';
+        throw new Error(`HTTP ${res.status}${detail && !detail.startsWith('<') ? `：${detail.slice(0, 300)}` : ''}`);
+    }
     return res.json();
+}
+
+function errorReason(err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') return '请求超时，请稍后重试';
+    if (err?.name === 'SyntaxError') return '返回的数据不是有效的 JSON';
+    return String(err?.message || err);
 }
 
 /** "https://github.com/user/repo(.git)" -> { owner, repo }, or null for other hosts. */
@@ -70,39 +80,91 @@ function githubRepo(remoteUrl) {
     return m ? { owner: m[1], repo: m[2] } : null;
 }
 
+/** Only public repository coordinates survive reloads, never scope or update status. */
+function rememberRepo(info) {
+    const gh = githubRepo(info.remoteUrl);
+    const source = gh && typeof info.currentBranchName === 'string' && info.currentBranchName
+        ? { folder: FOLDER, remoteUrl: `https://github.com/${gh.owner}/${gh.repo}`, branch: info.currentBranchName }
+        : null;
+    if (JSON.stringify(store.options.updateSource || null) !== JSON.stringify(source)) {
+        store.options.updateSource = source;
+        store.save();
+    }
+}
+
+function cachedRepo() {
+    const source = store.options.updateSource;
+    const gh = source?.folder === FOLDER && githubRepo(source.remoteUrl);
+    return gh && typeof source.branch === 'string' && source.branch ? { ...gh, branch: source.branch } : null;
+}
+
+/** A release declares its public source so a fresh install needs no manual setup. */
+function declaredRepo(manifest) {
+    try {
+        const url = new URL(manifest.homePage);
+        if (url.protocol !== 'https:' || url.hostname !== 'github.com'
+            || url.username || url.password || url.search || url.hash) return null;
+        const gh = githubRepo(url.href);
+        const branch = manifest.update_branch;
+        return gh && typeof branch === 'string' && branch.trim() ? { ...gh, branch: branch.trim() } : null;
+    } catch {
+        return null;
+    }
+}
+
 /** First URL that answers wins; a blocked GitHub falls through to the CDN mirror. */
 async function firstJson(urls) {
+    let lastError;
     for (const url of urls) {
         try {
             return await getJson(url);
-        } catch { /* try the next mirror */ }
+        } catch (err) { lastError = err; }
     }
-    return null;
+    throw lastError;
 }
 
 /** Asks ST about this extension's git repo: branch, remote, and whether origin has newer commits. */
 async function gitInfo() {
-    for (const global of [false, true]) {
-        try {
-            const res = await fetch('/api/extensions/version', {
-                method: 'POST',
-                headers: ctx.getRequestHeaders(),
-                body: JSON.stringify({ extensionName: FOLDER, global }),
-                signal: timeout(20000),
-            });
-            if (res.status === 404) continue;
-            if (!res.ok) return null;
-            return { ...(await res.json()), global };
-        } catch {
-            return null;
-        }
+    let extensions;
+    try {
+        extensions = await getJson('/api/extensions/discover');
+    } catch (err) {
+        throw new Error(`读取扩展安装信息失败：${errorReason(err)}`);
     }
-    return null;
+    if (!Array.isArray(extensions)) throw new Error('酒馆返回的扩展安装列表格式不正确');
+    const extension = extensions.find(e => e?.name === `third-party/${FOLDER}`);
+    if (!extension) throw new Error('酒馆未找到当前扩展的安装记录');
+    if (extension.type !== 'local' && extension.type !== 'global') throw new Error('无法确认扩展的安装范围');
+    const global = extension.type === 'global';
+    let info;
+    try {
+        info = await getJson('/api/extensions/version', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders(),
+            body: JSON.stringify({ extensionName: FOLDER, global }),
+            signal: timeout(20000),
+        });
+    } catch (err) {
+        throw new Error(`查询扩展仓库失败：${errorReason(err)}`);
+    }
+    if (typeof info?.isUpToDate !== 'boolean' || typeof info?.remoteUrl !== 'string') throw new Error('酒馆返回的仓库信息格式不正确');
+    rememberRepo(info);
+    if (!info.remoteUrl) throw new Error('当前安装没有仓库来源信息，无法检查更新');
+    if (githubRepo(info.remoteUrl) && !info.currentBranchName) throw new Error('仓库未提供分支信息，无法读取远程版本');
+    return { ...info, global };
 }
 
 /** Checks the repo. Also run from the settings page ("检查更新"). One check runs at a time. */
-export function checkForUpdates({ prompt = true } = {}) {
-    running ||= runCheck(prompt).finally(() => {
+export function checkForUpdates({ prompt = true, manual = true } = {}) {
+    if (running) {
+        if (!manual || runningManual) return running;
+        // A manual click must not inherit an automatic check's deferred/quiet result.
+        queuedManual ||= running.catch(() => {}).then(() => checkForUpdates({ prompt, manual: true }))
+            .finally(() => { queuedManual = null; });
+        return queuedManual;
+    }
+    runningManual = manual;
+    running = runCheck(prompt, manual).finally(() => {
         running = null;
     });
     return running;
@@ -111,49 +173,61 @@ export function checkForUpdates({ prompt = true } = {}) {
 /** Checks again when the last check is older than `ms`, e.g. when the user opens the extensions panel. */
 export function recheckIfOld(ms = RECHECK_MS) {
     if (running || (state.at && Date.now() - state.at < ms)) return;
-    checkForUpdates().catch(err => console.warn('[API Vault] update check failed', err));
+    checkForUpdates({ manual: false }).catch(err => console.warn('[API Vault] update check failed', err));
 }
 
-async function runCheck(prompt) {
+async function runCheck(prompt, manual) {
     state.error = '';
+    state.deferred = false;
+    state.updatable = false;
+    state.remote = '';
+    state.notices = [];
     state.busy = true;
     emit();
     try {
-        const local = await getJson(new URL('../manifest.json', import.meta.url).href).catch(() => null);
+        const local = await getJson(new URL('../manifest.json', import.meta.url).href).catch(err => {
+            throw new Error(`读取本地版本失败：${errorReason(err)}`);
+        });
         state.local = String(local?.version || '');
-        if (!gitAsked) {
-            gitAsked = true;
+        if (!state.local) throw new Error('本地版本文件没有有效版本号');
+        // TT emits backend errors independently of fetch. Only an explicit user action
+        // may call discover/version; automatic checks never invoke those commands.
+        if (manual && !git) {
             git = await gitInfo();
             gitLocal = state.local;
         }
         // ST's "behind origin" answer holds while the installed version is the one it was given for;
         // after an update from "管理扩展" (no reload yet) only the version numbers below count.
-        state.updatable = !!git && git.isUpToDate === false && state.local === gitLocal;
-        const gh = githubRepo(git?.remoteUrl);
-        if (gh) {
-            const branch = git.currentBranchName || 'main';
-            const raw = f => `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${branch}/${f}`;
-            const cdn = f => `https://cdn.jsdelivr.net/gh/${gh.owner}/${gh.repo}@${branch}/${f}`;
+        state.updatable = manual && !!git && git.isUpToDate === false && state.local === gitLocal;
+        const source = cachedRepo() || (!manual && declaredRepo(local));
+        if (source) {
+            const raw = f => `https://raw.githubusercontent.com/${source.owner}/${source.repo}/${source.branch}/${f}`;
+            const cdn = f => `https://cdn.jsdelivr.net/gh/${source.owner}/${source.repo}@${source.branch}/${f}`;
             const [remote, notice] = await Promise.all([
-                firstJson([raw('manifest.json'), cdn('manifest.json')]),
-                firstJson([raw('notice.json'), cdn('notice.json')]),
+                firstJson([raw('manifest.json'), cdn('manifest.json')]).catch(err => {
+                    throw new Error(`读取远程版本失败：${errorReason(err)}`);
+                }),
+                firstJson([raw('notice.json'), cdn('notice.json')]).catch(() => null),
             ]);
-            state.remote = String(remote?.version || '');
+            if (typeof remote?.version !== 'string' || !remote.version.trim()) throw new Error('远程版本文件没有有效版本号');
+            state.remote = remote.version;
             state.notices = normNotices(notice);
             // A higher version number in the repo counts too, even if ST's git check missed it.
             if (state.remote && state.local && compareVersions(state.remote, state.local) > 0) state.updatable = true;
-        } else if (!git) {
-            state.error = '没能读取扩展的仓库信息';
+        } else if (!manual) {
+            state.deferred = true;
         }
     } catch (err) {
-        state.error = String(err?.message || err);
+        state.updatable = false;
+        if (manual) state.error = errorReason(err);
+        else state.deferred = true;
     }
     state.checked = true;
     state.busy = false;
     state.at = Date.now();
     updateBadges();
     emit();
-    if (prompt && store.options.notices !== false) await maybePrompt();
+    if (!state.error && !state.deferred && prompt && store.options.notices !== false) await maybePrompt();
     return state;
 }
 
@@ -228,10 +302,15 @@ async function maybePrompt() {
 /** Pulls the repo through ST's own updater, then reloads so the new code runs. */
 export async function runUpdate() {
     try {
+        // An automatic public-file check has no authority to choose an install scope.
+        if (!git) {
+            git = await gitInfo();
+            gitLocal = state.local;
+        }
         const res = await fetch('/api/extensions/update', {
             method: 'POST',
             headers: ctx.getRequestHeaders(),
-            body: JSON.stringify({ extensionName: FOLDER, global: !!git?.global }),
+            body: JSON.stringify({ extensionName: FOLDER, global: git.global }),
         });
         if (!res.ok) throw new Error((await res.text()) || res.statusText);
         toastr.success('更新完成，正在刷新页面…', TITLE, { timeOut: 1500 });
