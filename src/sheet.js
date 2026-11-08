@@ -33,70 +33,122 @@ export function trackViewport() {
     update();
 }
 
-/**
- * A round floating button that can be dragged anywhere and snaps to the nearest side edge.
- * A short tap (moved less than 6px) calls `onTap`. Position is kept as fractions of the viewport.
- * @param {{onTap:Function, getPos:() => ({x:number, y:number}|null), setPos:(pos:{x:number, y:number}) => void}} opts
- */
-export function createFab({ onTap, getPos, setPos }) {
+export function normalizeFabSize(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? Math.min(80, Math.max(36, Math.round(value))) : 48;
+}
+
+/** A draggable key, or a narrow edge tab. Only a deliberate outward pull folds it. */
+export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'avm-root avm-fab';
-    btn.setAttribute('aria-label', '打开通用钥匙API管理器');
-    btn.title = '通用钥匙API管理器（可拖动）';
-    btn.innerHTML = '<i class="fa-solid fa-key"></i>';
+    btn.innerHTML = '<i class="fa-solid fa-key" aria-hidden="true"></i>';
 
-    const size = () => btn.offsetWidth || 48;
     const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-    const place = (left, top) => {
-        btn.style.left = `${clamp(left, 6, innerWidth - size() - 6)}px`;
-        btn.style.top = `${clamp(top, 6, innerHeight - size() - 6)}px`;
+    const viewport = () => ({ width: Math.max(1, innerWidth), height: Math.max(1, innerHeight) });
+    const position = () => {
+        const p = getPos();
+        return { x: Number.isFinite(p?.x) && p.x < 0.5 ? 0 : 1,
+            y: Number.isFinite(p?.y) ? clamp(p.y, 0, 1) : 0.62, collapsed: p?.collapsed === true };
     };
-    const restore = () => {
-        const p = getPos() || { x: 1, y: 0.62 };
-        place(p.x >= 0.5 ? innerWidth - size() - 6 : 6, p.y * innerHeight);
-    };
-
     let start = null;
     let moved = false;
+    let suppressClick = false;
+    let width = 48;
+    let height = 48;
+    let collapsed = false;
+    let side = 1;
+    let foldSide = null;
+    const present = (folded, edge) => {
+        const v = viewport();
+        const diameter = Math.min(normalizeFabSize(getSize()), Math.max(1, v.width - 12), Math.max(1, v.height - 12));
+        collapsed = folded;
+        side = edge;
+        width = folded ? Math.min(22, v.width) : diameter;
+        height = folded ? Math.min(Math.max(48, diameter), Math.max(1, v.height - 12)) : diameter;
+        btn.style.setProperty('--avm-fab-size', `${diameter}px`);
+        btn.style.width = `${width}px`;
+        btn.style.height = `${height}px`;
+        btn.classList.toggle('is-collapsed', folded);
+        btn.classList.toggle('is-left', edge === 0);
+        btn.setAttribute('aria-label', folded ? '展开悬浮钥匙按钮' : '打开通用钥匙API管理器');
+        btn.title = folded ? '点击展开，或向屏幕内拖出' : '通用钥匙API管理器（拖动移动，贴边后向外拖可收起）';
+    };
+    const place = (left, top) => {
+        const v = viewport();
+        const px = collapsed ? 0 : Math.min(6, Math.max(0, (v.width - width) / 2));
+        const py = Math.min(6, Math.max(0, (v.height - height) / 2));
+        btn.style.left = `${clamp(left, px, Math.max(px, v.width - width - px))}px`;
+        btn.style.top = `${clamp(top, py, Math.max(py, v.height - height - py))}px`;
+    };
+    const restore = () => {
+        if (start) return;
+        const p = position();
+        present(p.collapsed, p.x);
+        place(p.x ? viewport().width - width - (collapsed ? 0 : 6) : (collapsed ? 0 : 6), p.y * viewport().height);
+    };
     btn.addEventListener('pointerdown', e => {
-        if (e.button > 0) return;
-        const r = btn.getBoundingClientRect();
-        start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
+        if (e.button > 0 || start || e.isPrimary === false) return;
+        const rect = btn.getBoundingClientRect();
+        start = { id: e.pointerId, x: e.clientX, y: e.clientY,
+            left: rect.left, top: rect.top, side };
+        // Freeze the visible location, including a snap animation still in flight.
+        btn.classList.add('is-dragging');
+        btn.style.left = `${rect.left}px`;
+        btn.style.top = `${rect.top}px`;
         moved = false;
+        suppressClick = false;
+        foldSide = null;
         btn.setPointerCapture?.(e.pointerId);
     });
     btn.addEventListener('pointermove', e => {
-        if (!start) return;
+        if (!start || e.pointerId !== start.id) return;
         const dx = e.clientX - start.x;
         const dy = e.clientY - start.y;
         if (!moved && Math.hypot(dx, dy) < 6) return;
         moved = true;
         btn.classList.add('is-dragging');
-        place(start.left + dx, start.top + dy);
+        if (collapsed && (start.side === 0 ? dx > 12 : dx < -12)) {
+            present(false, start.side);
+            start.left = start.side ? viewport().width - width - 6 : 6;
+        }
+        const rawLeft = start.left + dx;
+        // Use the unclamped position: merely snapping to an edge must not hide the key.
+        foldSide = collapsed ? start.side : rawLeft <= -12 ? 0 : rawLeft + width >= viewport().width + 12 ? 1 : null;
+        place(collapsed ? (side ? viewport().width - width : 0) : rawLeft, start.top + dy);
+        btn.classList.toggle('is-collapse-ready', !collapsed && foldSide !== null);
+        if (!collapsed) btn.title = foldSide !== null ? '松开后收起到屏幕边缘' : '拖到边缘后继续向外拖，可收起按钮';
     });
-    const end = () => {
-        if (!start) return;
+    const end = (e, cancel = false) => {
+        if (!start || e.pointerId !== start.id) return;
+        const pointerId = start.id;
         start = null;
-        btn.classList.remove('is-dragging');
-        if (!moved) return;
-        const r = btn.getBoundingClientRect();
-        const pos = { x: r.left + r.width / 2 < innerWidth / 2 ? 0 : 1, y: r.top / innerHeight };
-        setPos(pos);
+        btn.classList.remove('is-dragging', 'is-collapse-ready');
+        suppressClick = cancel || moved;
+        if (!cancel && moved) {
+            const left = parseFloat(btn.style.left);
+            setPos({ x: foldSide ?? (left + width / 2 < viewport().width / 2 ? 0 : 1),
+                y: parseFloat(btn.style.top) / viewport().height, collapsed: foldSide !== null });
+        }
+        if (btn.hasPointerCapture?.(pointerId)) btn.releasePointerCapture(pointerId);
         restore();
     };
-    btn.addEventListener('pointerup', end);
-    btn.addEventListener('pointercancel', end);
-    // A drag ends in a click too; only a real tap opens the panel.
-    btn.addEventListener('click', () => {
-        if (!moved) onTap();
-        moved = false;
+    btn.addEventListener('pointerup', e => end(e));
+    btn.addEventListener('pointercancel', e => end(e, true));
+    btn.addEventListener('lostpointercapture', e => end(e, true));
+    btn.addEventListener('click', e => {
+        // Keyboard clicks (detail=0) remain usable even if a prior drag produced no click.
+        if (suppressClick && e.detail !== 0) { suppressClick = false; return; }
+        suppressClick = false;
+        const p = position();
+        if (p.collapsed) { setPos({ ...p, collapsed: false }); restore(); }
+        else onTap();
     });
     window.addEventListener('resize', restore);
 
     document.body.append(btn);
     restore();
-    return btn;
+    return { button: btn, refresh: restore };
 }
 
 /** Dragging `handle` down moves `sheet` with the finger; past 80px it closes, otherwise it snaps back. */

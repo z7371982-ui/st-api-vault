@@ -5,7 +5,7 @@ import { st } from './st.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST, linkExtensionsFor } from './sync.js';
 import { probe } from './probe.js';
 import { KIND_LABEL, syncBinding, syncProfileFields } from './fill.js';
-import { isCompact, isTouch, swipeToClose, trackViewport, createFab } from './sheet.js';
+import { isCompact, isTouch, swipeToClose, trackViewport, createFab, normalizeFabSize } from './sheet.js';
 import { updateState, onUpdateState, checkForUpdates, runUpdate, showChangelog, updateBadges } from './update.js';
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
@@ -26,6 +26,8 @@ let importState = null; // { loading, canView, items, picked:Set }
 let probeState = null; // { busy, ok, text, models:string[] }
 let editorEpoch = 0;
 let queryComposing = false;
+let fabSizeEditing = false;
+let fabRenderPending = false;
 const testing = new Set(); // profile ids with a card-level test running
 let armedDelete = null; // profile id whose delete button is waiting for the confirming second tap
 let armTimer = 0;
@@ -354,9 +356,16 @@ function settingsView() {
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
             ${row('tagBar', '标签筛选栏', '在列表和填写弹窗的搜索框下面显示一排标签，点一下只看带这个标签的配置。标签在编辑配置的「标签」框里填，多个用逗号隔开')}
             <label class="avm-switch-row">
-                <span><b>悬浮钥匙按钮</b><small>屏幕边上的圆形按钮，点一下打开通用钥匙API管理器，按住可以拖到任意位置，松手会贴到边上</small></span>
+                <span><b>悬浮钥匙按钮</b><small>点一下打开管理器，拖动后松手会贴边；贴到左、右边缘后继续向外拖，松手收成窄条。点窄条或向内拖可恢复按钮</small></span>
                 <input type="checkbox" class="avm-switch" data-opt="fab" ${fabEnabled() ? 'checked' : ''}>
             </label>
+            <div class="avm-fab-size-row">
+                <label for="avm-fab-size"><b>悬浮按钮大小</b><output for="avm-fab-size" data-role="fab-size-value">${normalizeFabSize(o.fabSize)} px</output></label>
+                <div class="avm-fab-size-control">
+                    <input id="avm-fab-size" type="range" min="36" max="80" step="2" value="${normalizeFabSize(o.fabSize)}" data-role="fab-size" aria-label="悬浮按钮大小">
+                    <span class="avm-fab-preview" data-role="fab-size-preview" style="--avm-fab-size:${normalizeFabSize(o.fabSize)}px" aria-hidden="true"><i class="fa-solid fa-key"></i></span>
+                </div>
+            </div>
             <div class="avm-note"><i class="fa-regular fa-keyboard"></i><div>
                 ${isCompact() || isTouch()
                     ? '<b>手机上</b>：点进插件的地址或密钥框，框边会出现钥匙按钮，点它从底部弹出配置列表；屏幕边上的悬浮钥匙可以拖动，点它打开通用钥匙API管理器。<br>'
@@ -391,6 +400,9 @@ function updateSection() {
 
 export function render({ force = false } = {}) {
     if (!root?.classList.contains('is-open')) return;
+    // Background checks must not replace a range control under the user's finger.
+    if (!force && fabSizeEditing) { fabRenderPending = true; return; }
+    fabRenderPending = false;
     const body = root.querySelector('.avm-body');
     // Background completion and reopening must not replace a live editor or IME input.
     if (!force && ((view === 'edit' && body.querySelector('[data-role="editor"]')) || queryComposing)) return;
@@ -1057,7 +1069,12 @@ async function onClick(e) {
 }
 
 function onInput(e) {
-    if (e.target.dataset.role === 'query') {
+    if (e.target.dataset.role === 'fab-size') {
+        fabSizeEditing = true;
+        const size = normalizeFabSize(Number(e.target.value));
+        root.querySelector('[data-role="fab-size-value"]').textContent = `${size} px`;
+        root.querySelector('[data-role="fab-size-preview"]').style.setProperty('--avm-fab-size', `${size}px`);
+    } else if (e.target.dataset.role === 'query') {
         query = e.target.value;
         if (!e.isComposing && !queryComposing) render();
     } else if (view === 'edit' && ['url', 'key'].includes(e.target.name)) {
@@ -1073,6 +1090,13 @@ function onInput(e) {
 
 function onChange(e) {
     const t = e.target;
+    if (t.dataset.role === 'fab-size') {
+        fabSizeEditing = false;
+        const focused = document.activeElement === t;
+        store.setOption('fabSize', normalizeFabSize(Number(t.value)));
+        if (focused) root.querySelector('[data-role="fab-size"]')?.focus({ preventScroll: true });
+        return;
+    }
     if (view === 'edit' && ['url', 'key', 'syncTarget'].includes(t.name)) invalidateEditorTest();
     if (t.dataset.opt) store.setOption(t.dataset.opt, t.checked);
     if (t.dataset.pick !== undefined && importState) {
@@ -1133,9 +1157,13 @@ function updateFab() {
             onTap: () => togglePanel(),
             getPos: () => store.options.fabPos,
             setPos: pos => store.setOption('fabPos', pos),
+            getSize: () => store.options.fabSize,
         });
     }
-    if (fab) fab.hidden = !on || root.classList.contains('is-open');
+    if (fab) {
+        fab.button.hidden = !on || root.classList.contains('is-open');
+        fab.refresh();
+    }
 }
 
 export function openPanel() {
@@ -1185,6 +1213,19 @@ export function initPanel(context) {
 
     root.addEventListener('click', e => onClick(e).catch(err => console.error('[API Vault]', err)));
     root.addEventListener('input', onInput);
+    root.addEventListener('pointerdown', e => {
+        if (e.target.dataset.role === 'fab-size') fabSizeEditing = true;
+    });
+    const finishSizeInput = () => {
+        fabSizeEditing = false;
+        // Let the range's change event commit before applying a deferred background render.
+        if (fabRenderPending) requestAnimationFrame(() => render());
+    };
+    window.addEventListener('pointerup', finishSizeInput);
+    window.addEventListener('pointercancel', finishSizeInput);
+    root.addEventListener('focusout', e => {
+        if (e.target.dataset.role === 'fab-size') finishSizeInput();
+    });
     root.addEventListener('compositionstart', e => {
         if (e.target.dataset.role === 'query') queryComposing = true;
     });

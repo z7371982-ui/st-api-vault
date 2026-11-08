@@ -20,6 +20,7 @@ export function defaultSettings() {
             // Floating key button: on by default on touch screens, where there is no Alt+K.
             fab: 'auto',
             fabPos: null,
+            fabSize: 48,
             // Read notice.json and the repo version from GitHub; only "major" notices pop up.
             notices: true,
             // Row of tag buttons under the search box, in the panel list and the fill picker.
