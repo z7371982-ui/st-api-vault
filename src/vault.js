@@ -17,6 +17,8 @@ export function defaultSettings() {
             // Off: nothing is imported behind the user's back; the "扫描" button lets them pick.
             autoImport: false,
             autoSync: true,
+            // One-time default only; the actual preference is ST's native setting.
+            presetApiProtectionInitialized: false,
             // Floating key button: on by default on touch screens, where there is no Alt+K.
             fab: 'auto',
             fabPos: null,

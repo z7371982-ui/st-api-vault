@@ -7,6 +7,7 @@ import { initProbe } from './src/probe.js';
 import { initFill } from './src/fill.js';
 import { initPanel, openPanel, togglePanel } from './src/panel.js';
 import { initUpdates, updateBadges } from './src/update.js';
+import { initPresetProtection } from './src/preset.js';
 
 function addMenuEntry() {
     const menu = document.getElementById('extensionsMenu');
@@ -61,6 +62,7 @@ function registerSlashCommand(ctx) {
 async function init() {
     const ctx = SillyTavern.getContext();
     store.init(ctx);
+    initPresetProtection(ctx);
     st.init(ctx);
     proxy.init(ctx);
     initSync(ctx);

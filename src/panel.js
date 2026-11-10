@@ -2,6 +2,7 @@
 // and always shows which field a click on "填入" would go to.
 import { store } from './store.js';
 import { st } from './st.js';
+import { presetProtection } from './preset.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST, linkExtensionsFor } from './sync.js';
 import { probe } from './probe.js';
 import { KIND_LABEL, syncBinding, syncProfileFields } from './fill.js';
@@ -349,6 +350,12 @@ function settingsView() {
             <h3>设置</h3>
         </div>
         <div class="avm-settings">
+            <label class="avm-switch-row">
+                <span><b>切换预设时保留 API</b><small>${presetProtection.supported
+                    ? '保留当前接口、地址、密钥和模型，提示词与采样参数仍随聊天补全预设切换。手动切换 API 不受影响；与酒馆的「将预设绑定到 API 连接」开关同步，勾选方向相反'
+                    : '当前酒馆未提供预设与 API 连接的绑定开关，此功能暂不可用'}</small></span>
+                <input type="checkbox" class="avm-switch" data-role="preset-api-protection" ${presetProtection.enabled ? 'checked' : ''} ${presetProtection.supported ? '' : 'disabled'}>
+            </label>
             ${row('pill', '输入框旁的钥匙按钮', '点进 API 地址或密钥框时，在框边上显示一个小钥匙，点开就能选配置')}
             ${row('autoFillBound', '自动填入已绑定的配置', '框是空的、之前在这里用过某个配置时，一点进去就自动填好')}
             ${row('capture', '发现新密钥时提示保存', '在插件里手动粘贴了管理器没有的密钥，弹个提示，点一下就存起来')}
@@ -1090,6 +1097,10 @@ function onInput(e) {
 
 function onChange(e) {
     const t = e.target;
+    if (t.dataset.role === 'preset-api-protection') {
+        presetProtection.setEnabled(t.checked);
+        return;
+    }
     if (t.dataset.role === 'fab-size') {
         fabSizeEditing = false;
         const focused = document.activeElement === t;
