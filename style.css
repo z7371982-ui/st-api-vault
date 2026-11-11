@@ -1,22 +1,68 @@
-/* API 管理器 · API Vault
-   Follows the active SillyTavern theme through its SmartTheme variables, with fallbacks. */
+/* API 管理器 · API Vault. Theme tokens inherit into independently mounted surfaces. */
+
+:root[data-avm-theme="light"] {
+    --avm-theme-scheme: light;
+    --avm-theme-bg: #f8fafc;
+    --avm-theme-fg: #1d293d;
+    --avm-theme-muted: #4d5d74;
+    --avm-theme-faint: #e4ebf5;
+    --avm-theme-line: #ccd8e8;
+    --avm-theme-surface: #edf2f8;
+    --avm-theme-input: #fff;
+    --avm-theme-accent: #3656af;
+    --avm-theme-accent-soft: #dce6fc;
+    --avm-theme-primary-hover: #28468f;
+    --avm-theme-ok: #197044;
+    --avm-theme-warn: #865100;
+    --avm-theme-danger: #a92d39;
+    --avm-theme-shadow: 0 18px 50px #1d365536, 0 2px 8px #1d36551a;
+}
+
+:root[data-avm-theme="dark"] {
+    --avm-theme-scheme: dark;
+    --avm-theme-bg: #151c29;
+    --avm-theme-fg: #edf1fa;
+    --avm-theme-muted: #aebad0;
+    --avm-theme-faint: #29354a;
+    --avm-theme-line: #3a4861;
+    --avm-theme-surface: #202b3e;
+    --avm-theme-input: #192334;
+    --avm-theme-accent: #a9bcff;
+    --avm-theme-accent-soft: #303d60;
+    --avm-theme-accent-ink: #131e38;
+    --avm-theme-primary-hover: #c4d0ff;
+    --avm-theme-ok: #83d8aa;
+    --avm-theme-warn: #efbe6d;
+    --avm-theme-danger: #ff9d9b;
+    --avm-theme-danger-ink: #31171c;
+}
+
+:root:is([data-avm-theme="light"], [data-avm-theme="dark"]) {
+    --avm-theme-filter: none;
+    --avm-theme-text-shadow: none;
+}
 
 .avm-root {
-    --avm-fg: var(--SmartThemeBodyColor, #e8e6e3);
-    --avm-muted: color-mix(in srgb, var(--avm-fg) 58%, transparent);
-    --avm-faint: color-mix(in srgb, var(--avm-fg) 10%, transparent);
-    --avm-line: color-mix(in srgb, var(--avm-fg) 14%, transparent);
-    --avm-bg: var(--SmartThemeBlurTintColor, rgba(23, 23, 28, 0.92));
-    --avm-surface: color-mix(in srgb, var(--avm-fg) 5%, transparent);
-    --avm-accent: var(--SmartThemeQuoteColor, #8b9cff);
-    --avm-accent-soft: color-mix(in srgb, var(--avm-accent) 18%, transparent);
-    --avm-ok: #4fbf8a;
-    --avm-warn: #e0a447;
-    --avm-danger: #e5675e;
+    --avm-fg: var(--avm-theme-fg, var(--SmartThemeBodyColor, #e8e6e3));
+    --avm-muted: var(--avm-theme-muted, color-mix(in srgb, var(--avm-fg) 58%, transparent));
+    --avm-faint: var(--avm-theme-faint, color-mix(in srgb, var(--avm-fg) 10%, transparent));
+    --avm-line: var(--avm-theme-line, color-mix(in srgb, var(--avm-fg) 14%, transparent));
+    --avm-bg: var(--avm-theme-bg, var(--SmartThemeBlurTintColor, rgba(23, 23, 28, 0.92)));
+    --avm-surface: var(--avm-theme-surface, color-mix(in srgb, var(--avm-fg) 5%, transparent));
+    --avm-input-bg: var(--avm-theme-input, color-mix(in srgb, var(--avm-fg) 4%, transparent));
+    --avm-accent: var(--avm-theme-accent, var(--SmartThemeQuoteColor, #8b9cff));
+    --avm-primary-hover: var(--avm-theme-primary-hover, color-mix(in srgb, var(--avm-accent) 85%, #fff));
+    --avm-accent-soft: var(--avm-theme-accent-soft, color-mix(in srgb, var(--avm-accent) 18%, transparent));
+    --avm-accent-ink: var(--avm-theme-accent-ink, #fff);
+    --avm-ok: var(--avm-theme-ok, #4fbf8a);
+    --avm-warn: var(--avm-theme-warn, #e0a447);
+    --avm-danger: var(--avm-theme-danger, #e5675e);
     --avm-radius: 12px;
-    --avm-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25);
+    --avm-shadow: var(--avm-theme-shadow, 0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25));
     font-family: var(--mainFontFamily, inherit);
+    color-scheme: var(--avm-theme-scheme, inherit);
     color: var(--avm-fg);
+    text-shadow: var(--avm-theme-text-shadow, inherit);
     box-sizing: border-box;
 }
 
@@ -29,11 +75,13 @@
 /* Older Android browsers / WebViews (Chrome < 111) have no color-mix(); plain approximations. */
 @supports not (color: color-mix(in srgb, red 50%, blue)) {
     .avm-root {
-        --avm-muted: rgba(160, 160, 160, 0.9);
-        --avm-faint: rgba(128, 128, 128, 0.16);
-        --avm-line: rgba(128, 128, 128, 0.28);
-        --avm-surface: rgba(128, 128, 128, 0.08);
-        --avm-accent-soft: rgba(139, 156, 255, 0.2);
+        --avm-muted: var(--avm-theme-muted, rgba(160, 160, 160, 0.9));
+        --avm-faint: var(--avm-theme-faint, rgba(128, 128, 128, 0.16));
+        --avm-line: var(--avm-theme-line, rgba(128, 128, 128, 0.28));
+        --avm-surface: var(--avm-theme-surface, rgba(128, 128, 128, 0.08));
+        --avm-input-bg: var(--avm-theme-input, rgba(128, 128, 128, 0.05));
+        --avm-primary-hover: var(--avm-theme-primary-hover, var(--avm-accent));
+        --avm-accent-soft: var(--avm-theme-accent-soft, rgba(139, 156, 255, 0.2));
     }
 }
 
@@ -72,7 +120,7 @@
     height: 100vh;
     height: calc(var(--avm-vh, 1vh) * 100);
     background: var(--avm-bg);
-    backdrop-filter: blur(var(--SmartThemeBlurStrength, 12px)) saturate(1.2);
+    backdrop-filter: var(--avm-theme-filter, blur(var(--SmartThemeBlurStrength, 12px)) saturate(1.2));
     border-left: 1px solid var(--avm-line);
     box-shadow: var(--avm-shadow);
     transform: translateX(105%);
@@ -108,7 +156,7 @@
     width: 36px;
     height: 36px;
     border-radius: 10px;
-    color: #fff;
+    color: var(--avm-accent-ink);
     background: linear-gradient(135deg, var(--avm-accent), var(--avm-accent));
     background: linear-gradient(135deg, var(--avm-accent), color-mix(in srgb, var(--avm-accent) 55%, #c86bff));
     box-shadow: 0 4px 14px rgba(128,128,128,0.48);
@@ -208,13 +256,12 @@
 .avm-btn.is-primary {
     border-color: transparent;
     background: var(--avm-accent);
-    color: #fff;
+    color: var(--avm-accent-ink);
     font-weight: 600;
 }
 
 .avm-btn.is-primary:hover:not(:disabled) {
-    background: var(--avm-accent);
-    background: color-mix(in srgb, var(--avm-accent) 85%, #fff);
+    background: var(--avm-primary-hover);
 }
 
 .avm-btn.is-danger {
@@ -228,7 +275,7 @@
 .avm-btn.is-confirm {
     border-color: transparent;
     background: var(--avm-danger);
-    color: #fff;
+    color: var(--avm-theme-danger-ink, #fff);
     font-weight: 600;
     animation: avm-pop-in 0.16s ease-out;
 }
@@ -689,8 +736,7 @@
     padding: 8px 10px;
     border: 1px solid var(--avm-line);
     border-radius: 9px;
-    background: rgba(128,128,128,0.05);
-    background: color-mix(in srgb, var(--avm-fg) 4%, transparent);
+    background: var(--avm-input-bg);
     color: var(--avm-fg);
     font: inherit;
     font-size: 1.05em;
@@ -699,7 +745,7 @@
 }
 
 .avm-root .avm-label select option {
-    background: var(--SmartThemeChatTintColor, #222);
+    background: var(--avm-theme-input, var(--SmartThemeChatTintColor, #222));
     color: var(--avm-fg);
 }
 
@@ -933,7 +979,7 @@
     transform: rotate(180deg);
 }
 
-/* Model list: its own opaque layer over the whole panel (background color set inline from the theme). */
+/* Model list: opaque over the form in all three themes. */
 .avm-model-sheet {
     position: absolute;
     top: 0;
@@ -945,7 +991,7 @@
     flex-direction: column;
     gap: 10px;
     padding: 14px;
-    background: var(--SmartThemeChatTintColor, #1e1e22);
+    background: var(--avm-theme-bg, var(--avm-model-opaque, #1e1e22));
     animation: avm-fade 0.15s ease-out;
 }
 
@@ -1143,6 +1189,73 @@
     gap: 8px;
 }
 
+.avm-theme-settings {
+    min-width: 0;
+    margin: 0;
+    padding: 8px 12px 11px;
+    border: 1px solid var(--avm-line);
+    border-radius: 10px;
+    background: var(--avm-surface);
+}
+
+.avm-theme-settings legend {
+    padding: 0 4px;
+    font-weight: 700;
+}
+
+.avm-theme-choices {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.avm-theme-choice {
+    position: relative;
+    cursor: pointer;
+}
+
+.avm-theme-choice input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+}
+
+.avm-theme-choice span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-height: 40px;
+    padding: 5px 4px;
+    border: 1px solid var(--avm-line);
+    border-radius: 8px;
+    background: var(--avm-bg);
+    color: var(--avm-muted);
+    text-align: center;
+    font-size: 0.87em;
+}
+
+.avm-theme-choice input:checked + span {
+    border-color: var(--avm-accent);
+    background: var(--avm-accent-soft);
+    color: var(--avm-fg);
+    font-weight: 700;
+}
+
+.avm-theme-choice input:focus-visible + span {
+    outline: 2px solid var(--avm-accent);
+    outline-offset: 2px;
+}
+
+.avm-theme-settings small {
+    display: block;
+    margin-top: 8px;
+    color: var(--avm-muted);
+    font-size: 0.8em;
+    line-height: 1.45;
+}
+
 .avm-switch-row {
     display: flex;
     align-items: center;
@@ -1223,7 +1336,7 @@
     border-radius: 999px;
     background: var(--avm-bg);
     background: color-mix(in srgb, var(--avm-accent) 22%, var(--avm-bg));
-    backdrop-filter: blur(8px);
+    backdrop-filter: var(--avm-theme-filter, blur(8px));
     color: var(--avm-fg);
     font-size: 12px;
     line-height: 1;
@@ -1261,12 +1374,12 @@
 .avm-pill:hover,
 .avm-pill.is-open {
     background: var(--avm-accent);
-    color: #fff;
+    color: var(--avm-accent-ink);
 }
 
 .avm-pill:hover .avm-key-icon,
 .avm-pill.is-open .avm-key-icon {
-    color: #fff;
+    color: var(--avm-accent-ink);
 }
 
 /* ---------- quick picker ---------- */
@@ -1280,7 +1393,7 @@
     border: 1px solid var(--avm-line);
     border-radius: 14px;
     background: var(--avm-bg);
-    backdrop-filter: blur(var(--SmartThemeBlurStrength, 12px)) saturate(1.2);
+    backdrop-filter: var(--avm-theme-filter, blur(var(--SmartThemeBlurStrength, 12px)) saturate(1.2));
     box-shadow: var(--avm-shadow);
     overflow: hidden;
     animation: avm-pop-in 0.16s ease-out;
@@ -1313,7 +1426,7 @@
     padding: 2px 8px;
     border-radius: 6px;
     background: var(--avm-accent);
-    color: #fff;
+    color: var(--avm-accent-ink);
     font-weight: 600;
     font-size: 0.92em;
 }
@@ -1446,7 +1559,7 @@
     border-radius: 50%;
     background: linear-gradient(135deg, var(--avm-accent), var(--avm-accent));
     background: linear-gradient(135deg, var(--avm-accent), color-mix(in srgb, var(--avm-accent) 55%, #c86bff));
-    color: #fff;
+    color: var(--avm-accent-ink);
     font-size: calc(var(--avm-fab-size, 48px) * 0.375);
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
     opacity: 0.88;
@@ -1477,7 +1590,7 @@
 .avm-fab-size-control { display: flex; align-items: center; gap: 20px; min-height: 92px; }
 .avm-fab-size-control input[type="range"] { min-width: 0; flex: 1; width: 100%; accent-color: var(--avm-accent); }
 .avm-fab-preview { display: grid; place-items: center; flex: 0 0 80px; width: 80px; height: 80px; }
-.avm-fab-preview > i { display: grid; place-items: center; width: var(--avm-fab-size); height: var(--avm-fab-size); border-radius: 50%; background: var(--avm-accent); color: #fff; font-size: calc(var(--avm-fab-size) * 0.375); }
+.avm-fab-preview > i { display: grid; place-items: center; width: var(--avm-fab-size); height: var(--avm-fab-size); border-radius: 50%; background: var(--avm-accent); color: var(--avm-accent-ink); font-size: calc(var(--avm-fab-size) * 0.375); }
 
 .avm-grabber {
     display: none;
@@ -1732,8 +1845,25 @@
 }
 
 .avm-notice {
+    background: var(--avm-theme-bg, transparent);
     text-align: left;
     line-height: 1.6;
+}
+
+/* Shield major surfaces from blanket transparent backgrounds in host themes. */
+:root:is([data-avm-theme="light"], [data-avm-theme="dark"]) :is(.avm-panel, .avm-pop, .avm-model-sheet) {
+    background: var(--avm-theme-bg) !important;
+}
+
+:root:is([data-avm-theme="light"], [data-avm-theme="dark"]) .avm-root small {
+    opacity: 1;
+}
+
+:root:is([data-avm-theme="light"], [data-avm-theme="dark"]) dialog.popup:has(.avm-notice) {
+    background: var(--avm-theme-bg) !important;
+    color: var(--avm-theme-fg);
+    color-scheme: var(--avm-theme-scheme);
+    text-shadow: none;
 }
 
 .avm-notice h3 {

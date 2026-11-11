@@ -15,6 +15,17 @@ import {
 } from './vault.js';
 
 const TITLE = '通用钥匙API管理器';
+const THEMES = [
+    ['light', '日间', 'sun'],
+    ['dark', '夜间', 'moon'],
+    ['auto', '跟随酒馆', 'wand-magic-sparkles'],
+];
+const normalizeTheme = value => THEMES.some(([name]) => name === value) ? value : 'light';
+
+function applyTheme() {
+    // Inherited CSS tokens reach the picker even when it mounts inside a shadow root.
+    document.documentElement.dataset.avmTheme = normalizeTheme(store.options.theme);
+}
 
 let ctx = null;
 let root = null;
@@ -350,6 +361,16 @@ function settingsView() {
             <h3>设置</h3>
         </div>
         <div class="avm-settings">
+            <fieldset class="avm-theme-settings">
+                <legend>外观主题</legend>
+                <div class="avm-theme-choices">
+                    ${THEMES.map(([value, label, icon]) => `<label class="avm-theme-choice">
+                        <input type="radio" name="avm-theme" value="${value}" data-role="theme" ${normalizeTheme(o.theme) === value ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-${icon}" aria-hidden="true"></i>${label}</span>
+                    </label>`).join('')}
+                </div>
+                <small>日间和夜间使用不透明底色。跟随酒馆时使用当前美化配色。</small>
+            </fieldset>
             <label class="avm-switch-row">
                 <span><b>切换预设时保留 API</b><small>${presetProtection.supported
                     ? '保留当前接口、地址、密钥和模型，提示词与采样参数仍随聊天补全预设切换。手动切换 API 不受影响；与酒馆的「将预设绑定到 API 连接」开关同步，勾选方向相反'
@@ -661,7 +682,7 @@ function openModelMenu() {
     if (!modelSheetOpen()) {
         const search = modelSheet.querySelector('[data-role="model-search"]');
         search.value = '';
-        modelSheet.style.backgroundColor = opaqueBackground();
+        modelSheet.style.setProperty('--avm-model-opaque', opaqueBackground());
         root.append(modelSheet);
         // On phones a focused search box would pop the keyboard over the list.
         if (!isTouch()) search.focus({ preventScroll: true });
@@ -1097,6 +1118,12 @@ function onInput(e) {
 
 function onChange(e) {
     const t = e.target;
+    if (t.dataset.role === 'theme' && t.checked) {
+        const focused = document.activeElement === t;
+        store.setOption('theme', normalizeTheme(t.value));
+        if (focused) root.querySelector('[name="avm-theme"]:checked')?.focus({ preventScroll: true });
+        return;
+    }
     if (t.dataset.role === 'preset-api-protection') {
         presetProtection.setEnabled(t.checked);
         return;
@@ -1201,6 +1228,7 @@ export function togglePanel() {
 
 export function initPanel(context) {
     ctx = context;
+    applyTheme();
     root = document.createElement('aside');
     root.className = 'avm-root avm-panel';
     root.setAttribute('aria-label', TITLE);
@@ -1271,6 +1299,7 @@ export function initPanel(context) {
 
     // The editor holds unsaved input, so only the other views follow live changes.
     store.onChange(() => {
+        applyTheme();
         updateFab();
         if (view !== 'edit') render();
         else if (probeState?.ok) {

@@ -11,6 +11,7 @@ export function defaultSettings() {
         // "<secretKey>:<secretId>" refs already looked at during import, so deleted profiles are not re-imported
         seenRefs: [],
         options: {
+            theme: 'light',
             pill: true,
             autoFillBound: false,
             capture: true,
