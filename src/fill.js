@@ -394,8 +394,14 @@ function containsFixed(n) {
  *     This works for windows inside a shadow root too; our stylesheet is linked in there (see mount).
  */
 function hostFor(el) {
-    return closestComposed(el, 'dialog[open]') || floatingWindowOf(el) || document.body;
+    const host = closestComposed(el, 'dialog[open]') || floatingWindowOf(el) || document.body;
+    // A shadow host renders its shadow tree, not its own children: a node appended to the host is never
+    // drawn. Plugins that keep their dialogs in a fixed full-screen shadow host (e.g. SevenDaysCal) hit this.
+    return host.shadowRoot || host;
 }
+
+/** The element whose computed style describes `host`, which may be a shadow root. */
+const boxOf = host => (host.nodeType === 11 ? host.host : host);
 
 function targetHost() {
     if (!target?.el) return document.body;
@@ -423,8 +429,11 @@ function ensureStyles(host) {
  */
 function mount(node, { sheet = false } = {}) {
     let host = targetHost();
-    if (sheet && host !== document.body && host.tagName !== 'DIALOG' && containsFixed(host)) host = document.body;
+    if (sheet && host !== document.body && host.tagName !== 'DIALOG' && containsFixed(boxOf(host))) host = document.body;
     ensureStyles(host);
+    // Inside a plugin's window we share its stacking context, where its own overlay may sit far above
+    // our usual z-index (SevenDaysCal uses 2000002), so stack at the top there.
+    node.classList.toggle('is-hosted', host !== document.body);
     if (node.parentNode !== host) host.append(node);
 }
 

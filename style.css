@@ -1905,3 +1905,9 @@
     text-align: center;
     opacity: 0.8;
 }
+
+/* Mounted inside another plugin's window. That window's own overlay can sit far above our usual
+   z-index (SevenDaysCal: 2000002), and a shadow host with pointer-events:none passes that on to us. */
+.avm-root.avm-backdrop.is-hosted { z-index: 2147483600; pointer-events: auto; }
+.avm-root.avm-pill.is-hosted { z-index: 2147483601; pointer-events: auto; }
+.avm-root.avm-pop.is-hosted { z-index: 2147483602; pointer-events: auto; }

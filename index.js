@@ -8,6 +8,7 @@ import { initFill } from './src/fill.js';
 import { initPanel, openPanel, togglePanel } from './src/panel.js';
 import { initUpdates, updateBadges } from './src/update.js';
 import { initPresetProtection } from './src/preset.js';
+import { initAutoConnect } from './src/autoconnect.js';
 
 function addMenuEntry() {
     const menu = document.getElementById('extensionsMenu');
@@ -73,6 +74,7 @@ async function init() {
     addSettingsDrawer();
     registerSlashCommand(ctx);
     initUpdates(ctx);
+    initAutoConnect(ctx);
     // The wand menu is rebuilt by ST at times; put the mark back on our entry.
     document.getElementById('extensionsMenuButton')?.addEventListener('click', () => setTimeout(updateBadges, 0));
 
