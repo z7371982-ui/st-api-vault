@@ -173,6 +173,45 @@ export const st = {
         await post('/api/secrets/delete', { key, id });
     },
 
+    /**
+     * A secret already stored under `key` that holds exactly `value`, so it can be reused instead of
+     * written again. ST's writeSecret always appends, and every append is one more row in its key list.
+     * Only exact matches count: with keys hidden (no allowKeysExposure) nothing can be compared safely.
+     */
+    async findSame(key, value) {
+        if (!value) return null;
+        const state = await this.state().catch(() => null);
+        const list = Array.isArray(state?.[key]) ? state[key] : [];
+        return list.find(s => s.value && !s.value.includes('*') && s.value === value) || null;
+    },
+
+    /**
+     * Groups of identical values per secret slot. Keeps the active one (or the first) of each group.
+     * Needs allowKeysExposure; with masked values duplicates cannot be told apart.
+     * @returns {Promise<{canView: boolean, groups: {key: string, keep: object, drop: object[]}[]}>}
+     */
+    async duplicates() {
+        const canView = await this.canView();
+        if (!canView) return { canView, groups: [] };
+        const state = await this.state();
+        const groups = [];
+        for (const [key, list] of Object.entries(state || {})) {
+            if (!Array.isArray(list) || NOT_A_KEY.test(key)) continue;
+            const byValue = new Map();
+            for (const s of list) {
+                if (!s.value || s.value.includes('*')) continue;
+                if (!byValue.has(s.value)) byValue.set(s.value, []);
+                byValue.get(s.value).push(s);
+            }
+            for (const same of byValue.values()) {
+                if (same.length < 2) continue;
+                const keep = same.find(s => s.active) || same[0];
+                groups.push({ key, keep, drop: same.filter(s => s !== keep) });
+            }
+        }
+        return { canView, groups };
+    },
+
     async rename(key, id, label) {
         const m = await loadModule();
         if (m) return m.renameSecret(key, id, label);

@@ -513,6 +513,16 @@ async function pushKeyToST(p) {
     const { key: slot, id: oldId } = p.stRef;
     const wasActive = activeRefs.has(refKey(p.stRef));
     busyUntil = Date.now() + 3000;
+    // The new key is already in the slot: link to that copy instead of adding a duplicate.
+    const same = await st.findSame(slot, p.key);
+    if (same && same.id !== oldId) {
+        // The old copy is left in ST: a Connection Manager profile may still point at it.
+        if (wasActive && !same.active) await st.rotate(slot, same.id);
+        p.stRef = { key: slot, id: same.id };
+        p.stLabel = same.label || '';
+        p.syncedHash = hashKey(p.key);
+        return;
+    }
     const newId = await st.write(slot, p.key, p.name);
     if (!newId) throw new Error('酒馆没有接受新的密钥');
     store.settings.seenRefs.push(`${slot}:${newId}`);
@@ -578,7 +588,7 @@ export async function pushProfile(profile, { isNew = false } = {}) {
  * secret slot (reusing the stored secret when the key has not changed, otherwise writing a new one).
  * @returns {Promise<string>} friendly name of what ST now uses it for
  */
-export async function syncToST(profile, target) {
+export async function syncToST(profile, target, { remember = true } = {}) {
     const p = store.get(profile.id) || profile;
     // A key imported from secrets.json with only a mask cannot become a proxy preset; switch its slot instead.
     const maskedOnly = !p.key && p.stRef && !p.stMissing ? p.stRef.key : '';
@@ -609,16 +619,27 @@ export async function syncToST(profile, target) {
     busyUntil = Date.now() + 3000;
     const key = await resolveKey(p);
     const linked = p.stRef?.key === slot && !p.stMissing;
+    // A pick into ST's own key box is a one-off: the profile's "在酒馆里怎么用" choice stays as it was.
+    const syncTarget = remember ? slot : p.syncTarget;
     const unchanged = linked && (!key || p.syncedHash === hashKey(key));
+
+    // The same key may already be stored in this slot (saved by ST's own Connect, another profile, or an
+    // earlier switch). Reuse it: writing again only adds another identical row to ST's key list.
+    const same = !unchanged && key ? await st.findSame(slot, key) : null;
 
     if (unchanged) {
         await st.rotate(p.stRef.key, p.stRef.id);
+    } else if (same) {
+        if (!same.active) await st.rotate(slot, same.id);
+        store.upsert({ id: p.id, syncTarget, stLabel: same.label || '', stMissing: false });
+        store.markSynced(p.id, { key: slot, id: same.id });
+        if (!store.settings.seenRefs.includes(`${slot}:${same.id}`)) store.settings.seenRefs.push(`${slot}:${same.id}`);
     } else if (key) {
         const id = await st.write(slot, key, p.name);
         if (!id) throw new Error('酒馆没有接受这个密钥');
         // The old copy of this profile in the same slot is now stale.
         if (linked) await st.remove(slot, p.stRef.id).catch(() => {});
-        store.upsert({ id: p.id, syncTarget: slot, stLabel: p.name, stMissing: false });
+        store.upsert({ id: p.id, syncTarget, stLabel: p.name, stMissing: false });
         store.markSynced(p.id, { key: slot, id });
         store.settings.seenRefs.push(`${slot}:${id}`);
     } else {

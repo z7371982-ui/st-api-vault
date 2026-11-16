@@ -12,24 +12,42 @@ export const isTouch = () => matchMedia('(hover: none) and (pointer: coarse)').m
  *             the address bar and so cuts the bottom of a sheet off.
  *   --avm-kb  on-screen keyboard height, so bottom sheets stay above it.
  */
+let refreshViewport = () => {};
+/** Re-reads the viewport now, e.g. right before a sheet opens. */
+export function syncViewport() {
+    refreshViewport();
+}
+
 export function trackViewport() {
     const vv = window.visualViewport;
     const root = document.documentElement.style;
+    let lastH = 0;
     const update = () => {
         // Layout viewport height: the screen area the page really gets, without the address bar.
         // The keyboard is handled separately by --avm-kb, so it must not shrink this one as well,
         // otherwise a sheet loses the keyboard height twice.
-        const h = innerHeight || document.documentElement.clientHeight;
+        // Phone WebViews report 0 or a tiny height for a moment (app switch, keyboard closing, page in the
+        // background). A sheet sized from that is invisible while its dark backdrop still covers the page,
+        // so such readings fall back to the last good one or the screen height.
+        let h = innerHeight || document.documentElement.clientHeight;
+        if (!(h >= 200)) h = lastH || Math.max(document.documentElement.clientHeight || 0, screen?.height || 0, 480);
+        lastH = h;
         root.setProperty('--avm-vh', `${h / 100}px`);
         // Pinch zoom also shrinks the visual viewport; that is not a keyboard.
         let kb = vv && vv.scale <= 1.01 ? Math.round(h - vv.height - vv.offsetTop) : 0;
-        if (kb < 0 || kb > h * 0.75) kb = 0;
+        // A keyboard never takes more than about half the screen; a bigger value is a stale reading
+        // (visualViewport not resized back yet) and would squash the sheet to nothing.
+        if (!(kb > 0) || kb > h * 0.6) kb = 0;
         root.setProperty('--avm-kb', `${kb}px`);
     };
     window.addEventListener('resize', update);
     window.addEventListener('orientationchange', () => setTimeout(update, 300));
     vv?.addEventListener('resize', update);
     vv?.addEventListener('scroll', update);
+    // Coming back to the app: the values read while it was in the background may be stale.
+    document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && update());
+    window.addEventListener('pageshow', update);
+    refreshViewport = update;
     update();
 }
 
@@ -45,7 +63,15 @@ export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
     btn.innerHTML = '<i class="fa-solid fa-key" aria-hidden="true"></i>';
 
     const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-    const viewport = () => ({ width: Math.max(1, innerWidth), height: Math.max(1, innerHeight) });
+    // Phone WebViews report 0 or a few px for a moment (app switch, keyboard closing). Laid out from that,
+    // the key shrank to a 1-2px sliver at the top edge and could not be tapped until the next resize.
+    let lastView = null;
+    const viewport = () => {
+        const w = innerWidth || document.documentElement.clientWidth;
+        const h = innerHeight || document.documentElement.clientHeight;
+        if (w >= 120 && h >= 200) lastView = { width: w, height: h };
+        return lastView || { width: Math.max(320, w || 0), height: Math.max(480, h || 0) };
+    };
     const position = () => {
         const p = getPos();
         return { x: Number.isFinite(p?.x) && p.x < 0.5 ? 0 : 1,
@@ -133,18 +159,38 @@ export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
         if (btn.hasPointerCapture?.(pointerId)) btn.releasePointerCapture(pointerId);
         restore();
     };
-    btn.addEventListener('pointerup', e => end(e));
+    // Some phone WebViews (zoomed pages, pointer capture quirks, an overlay appearing mid-tap) never deliver
+    // the `click` after a touch tap, so the key looked dead. A clean tap is handled on pointerup; the click
+    // that may still follow is then ignored.
+    let tappedAt = 0;
+    const activate = () => {
+        const p = position();
+        if (p.collapsed) { setPos({ ...p, collapsed: false }); restore(); }
+        else onTap();
+    };
+    btn.addEventListener('pointerup', e => {
+        const tap = start && e.pointerId === start.id && !moved && e.pointerType !== 'mouse';
+        end(e);
+        if (!tap) return;
+        tappedAt = Date.now();
+        suppressClick = true;
+        activate();
+    });
     btn.addEventListener('pointercancel', e => end(e, true));
     btn.addEventListener('lostpointercapture', e => end(e, true));
     btn.addEventListener('click', e => {
         // Keyboard clicks (detail=0) remain usable even if a prior drag produced no click.
         if (suppressClick && e.detail !== 0) { suppressClick = false; return; }
         suppressClick = false;
-        const p = position();
-        if (p.collapsed) { setPos({ ...p, collapsed: false }); restore(); }
-        else onTap();
+        // Already handled on pointerup.
+        if (e.detail !== 0 && Date.now() - tappedAt < 800) return;
+        activate();
     });
     window.addEventListener('resize', restore);
+    // Back from the background: lay it out again from the real screen size.
+    document.addEventListener?.('visibilitychange', () => document.visibilityState === 'visible' && setTimeout(restore, 50));
+    window.addEventListener?.('pageshow', restore);
+    globalThis.visualViewport?.addEventListener?.('resize', restore);
 
     document.body.append(btn);
     restore();

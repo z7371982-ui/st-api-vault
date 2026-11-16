@@ -6,10 +6,10 @@ import { presetProtection } from './preset.js';
 import { collectCandidates, importItems, syncToST, resolveKey, pushProfile, reconcile, isActiveInST, linkExtensionsFor } from './sync.js';
 import { probe } from './probe.js';
 import { KIND_LABEL, syncBinding, syncProfileFields } from './fill.js';
-import { isCompact, isTouch, swipeToClose, trackViewport, createFab, normalizeFabSize } from './sheet.js';
+import { isCompact, isTouch, swipeToClose, trackViewport, syncViewport, createFab, normalizeFabSize } from './sheet.js';
 import { updateState, onUpdateState, checkForUpdates, runUpdate, showChangelog, updateBadges } from './update.js';
 import {
-    esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles,
+    esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, SORTS, normalizeSort, moveInOrder,
     parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus, extRefId,
     tagList, tagBarHtml, splitFavorites, hostQueues,
 } from './vault.js';
@@ -114,7 +114,7 @@ function activeTag() {
 /** Profiles the list shows right now: search and tag filter applied. */
 function shownProfiles() {
     const t = activeTag();
-    const list = sortProfiles(searchProfiles(store.profiles, query));
+    const list = sortProfiles(searchProfiles(store.profiles, query), store.options.sort, store.options.order);
     return t ? list.filter(p => p.tags.includes(t)) : list;
 }
 
@@ -155,6 +155,10 @@ function card(p) {
                 <div class="avm-card-name">${esc(p.name)}</div>
                 <div class="avm-card-host">${esc(hostOf(p.url) || '未填地址')}${p.model ? ` · ${esc(p.model)}` : ''}</div>
             </div>
+            ${normalizeSort(store.options.sort) === 'custom' ? `<span class="avm-move">
+                <button type="button" class="avm-icon-btn" data-act="move-up" title="上移" aria-label="上移 ${esc(p.name)}"><i class="fa-solid fa-chevron-up"></i></button>
+                <button type="button" class="avm-icon-btn" data-act="move-down" title="下移" aria-label="下移 ${esc(p.name)}"><i class="fa-solid fa-chevron-down"></i></button>
+            </span>` : ''}
             <button type="button" class="avm-icon-btn" data-act="edit" title="编辑" aria-label="编辑 ${esc(p.name)}"><i class="fa-solid fa-pen"></i></button>
             ${armedDelete === p.id
                 ? `<button type="button" class="avm-btn is-confirm" data-act="card-delete" title="再点一次删除" aria-label="确认删除 ${esc(p.name)}"><i class="fa-solid fa-trash"></i>确认删除</button>`
@@ -232,6 +236,16 @@ function listView() {
             <button type="button" class="avm-btn" data-act="import" title="扫描酒馆和其他插件里已保存的 API，自己选要导入哪些"><i class="fa-solid fa-magnifying-glass-plus"></i><span class="avm-hide-sm">扫描</span></button>
             <button type="button" class="avm-btn is-primary" data-act="new" title="新建配置"><i class="fa-solid fa-plus"></i><span class="avm-hide-sm">新建</span></button>
         </div>
+        ${store.profiles.length ? `<div class="avm-sortbar">
+            <label class="avm-sort">
+                <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
+                <span>排序</span>
+                <select data-role="sort" aria-label="列表排序">
+                    ${SORTS.map(([v, label]) => `<option value="${v}" ${normalizeSort(store.options.sort) === v ? 'selected' : ''}>${label}</option>`).join('')}
+                </select>
+            </label>
+            ${normalizeSort(store.options.sort) === 'custom' ? '<span class="avm-hint">用卡片右上的 ↑ ↓ 调整顺序，钥匙按钮弹出的列表也按这个顺序</span>' : ''}
+        </div>` : ''}
         ${store.options.tagBar ? tagBarHtml(allTags(), activeTag(), store.profiles.length) : ''}
         <div class="avm-list">${list.length ? list.map(p => card(p)).join('') : empty}</div>
         ${store.profiles.length ? `<div class="avm-list-foot">
@@ -383,6 +397,10 @@ function settingsView() {
             ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
             ${row('autoConnect', '启动后自动连接 API', '重新进入酒馆后，如果没有连上，自动按一次上次成功连接时的「连接」按钮（只在接口和来源没变时，最多试 3 次）')}
+            <div class="avm-switch-row">
+                <span><b>清理酒馆里重复的密钥</b><small>酒馆「管理密钥」列表里同一个密钥存了好几份时，每组只留一份（正在用的那份优先），其余删除。需要 config.yaml 开启 allowKeysExposure 才能比对</small></span>
+                <button type="button" class="avm-btn" data-act="dedupe-st"><i class="fa-solid fa-broom"></i>检查</button>
+            </div>
             ${row('tagBar', '标签筛选栏', '在列表和填写弹窗的搜索框下面显示一排标签，点一下只看带这个标签的配置。标签在编辑配置的「标签」框里填，多个用逗号隔开')}
             <label class="avm-switch-row">
                 <span><b>悬浮钥匙按钮</b><small>点一下打开管理器，拖动后松手会贴边；贴到左、右边缘后继续向外拖，松手收成窄条。点窄条或向内拖可恢复按钮</small></span>
@@ -1070,6 +1088,59 @@ async function onClick(e) {
             toastr.success(`已删除「${esc(p.name)}」${p.stRef || p.proxyRef || p.extRefs.length ? '，酒馆和插件里的原数据没动' : ''}`, TITLE, { timeOut: 2000 });
             return render();
         }
+        case 'move-up':
+        case 'move-down': {
+            if (!p) return;
+            const next = moveInOrder(store.options.order, shownProfiles(), p.id, el.dataset.act === 'move-up' ? -1 : 1);
+            if (!next) return;
+            store.setOption('order', next);
+            // Keep focus on the same arrow of the moved card, so pressing it again keeps moving it.
+            root.querySelector(`.avm-card[data-id="${CSS.escape(p.id)}"] [data-act="${el.dataset.act}"]`)?.focus({ preventScroll: false });
+            return;
+        }
+        case 'dedupe-st': {
+            el.disabled = true;
+            try {
+                const { canView, groups } = await st.duplicates();
+                if (!canView) {
+                    toastr.warning('酒馆没开 allowKeysExposure，只能看到掩码，没法判断哪些是重复的。在 config.yaml 设为 true 并重启后再试', TITLE, { timeOut: 7000 });
+                    return;
+                }
+                const n = groups.reduce((sum, g) => sum + g.drop.length, 0);
+                if (!n) {
+                    toastr.success('没有重复的密钥', TITLE, { timeOut: 2000 });
+                    return;
+                }
+                const ok = await confirmDialog(
+                    `删除 ${n} 个重复的密钥？`,
+                    `共 ${groups.length} 组相同的密钥，每组保留一份（正在用的那份优先），其余 ${n} 份从酒馆的「管理密钥」里删除。不会影响能否连接。`,
+                );
+                if (!ok) return;
+                // ST's Connection Manager profiles point at one copy by id; repoint them before deleting.
+                const cmProfiles = ctx.extensionSettings?.connectionManager?.profiles || [];
+                for (const g of groups) {
+                    for (const s of g.drop) {
+                        // A profile pointing at a removed copy follows the one that stays.
+                        for (const p of store.profiles) {
+                            if (p.stRef?.key === g.key && p.stRef.id === s.id) p.stRef = { key: g.key, id: g.keep.id };
+                        }
+                        for (const cp of cmProfiles) {
+                            if (cp?.['secret-id'] === s.id) cp['secret-id'] = g.keep.id;
+                        }
+                        await st.remove(g.key, s.id);
+                    }
+                }
+                ctx.saveSettingsDebounced();
+                store.save();
+                await reconcile();
+                toastr.success(`已删除 ${n} 个重复的密钥`, TITLE, { timeOut: 2500 });
+            } catch (err) {
+                toastr.error(esc(err.message || String(err)), TITLE);
+            } finally {
+                el.disabled = false;
+            }
+            return;
+        }
         case 'clear-all': {
             const n = store.profiles.length;
             if (!n) return;
@@ -1125,6 +1196,10 @@ function onChange(e) {
         if (focused) root.querySelector('[name="avm-theme"]:checked')?.focus({ preventScroll: true });
         return;
     }
+    if (t.dataset.role === 'sort') {
+        store.setOption('sort', normalizeSort(t.value));
+        return;
+    }
     if (t.dataset.role === 'preset-api-protection') {
         presetProtection.setEnabled(t.checked);
         return;
@@ -1155,10 +1230,8 @@ let panelDialog = null;
 function updatePanelLayer() {
     if (!isCompact() || !root.classList.contains('is-open')) {
         panelBackdrop?.remove();
-        if (panelDialog?.open) {
-            document.body.append(root);
-            panelDialog.close();
-        }
+        if (panelDialog?.open) panelDialog.close();
+        if (root.parentElement !== document.body) document.body.append(root);
         return;
     }
     if (!panelBackdrop) {
@@ -1177,10 +1250,42 @@ function updatePanelLayer() {
     }
     if (panelDialog) {
         if (root.parentElement !== panelDialog) panelDialog.append(panelBackdrop, root);
-        if (!panelDialog.open) panelDialog.showModal();
+        // The dialog spans the screen itself; drop offsets left over from a page-layer fallback.
+        root.style.removeProperty('--avm-sheet-bottom');
+        Object.assign(panelBackdrop.style, { top: '', height: '', bottom: '' });
+        if (!panelDialog.open) {
+            try {
+                panelDialog.showModal();
+            } catch (err) {
+                // Some WebViews refuse (another modal is open, the dialog is mid-transition). The panel and its
+                // backdrop are inside the dialog, so a closed dialog would show neither; fall back to body.
+                console.warn('[API Vault] showModal failed, using the page layer', err);
+                usePageLayer();
+            }
+        }
     } else {
-        document.body.append(panelBackdrop);
+        usePageLayer();
     }
+}
+
+/**
+ * Phone sheet without a top-layer dialog (old WebViews, or showModal refused). ST puts translateZ(0) on <html>,
+ * which makes it the box position:fixed is measured against, and on phones that box can be far shorter than
+ * the screen. A sheet with bottom:0 then sits above the screen while its backdrop still darkens the page, so
+ * the sheet and backdrop are moved by how far that box's bottom is from the screen's bottom.
+ */
+function usePageLayer() {
+    document.body.append(panelBackdrop, root);
+    const probe = Object.assign(document.createElement('div'), { className: 'avm-root' });
+    probe.style.cssText = 'position:fixed;left:0;top:0;bottom:0;width:0;visibility:hidden;pointer-events:none';
+    document.body.append(probe);
+    const r = probe.getBoundingClientRect();
+    probe.remove();
+    const h = window.innerHeight || document.documentElement.clientHeight;
+    const shift = Math.round(r.bottom - h);
+    root.style.setProperty('--avm-sheet-bottom', `${shift}px`);
+    // The backdrop is laid out against the same box; make it cover the screen.
+    Object.assign(panelBackdrop.style, { top: `${-r.top}px`, height: `${h}px`, bottom: 'auto' });
 }
 
 /** "auto" means: show the floating button only where there is no keyboard shortcut. */
@@ -1206,6 +1311,8 @@ function updateFab() {
 }
 
 export function openPanel() {
+    // The viewport may have changed while the app was in the background; size the sheet from fresh values.
+    syncViewport();
     root.classList.add('is-open');
     root.setAttribute('aria-hidden', 'false');
     if (view === 'import' && !importState) view = 'list';

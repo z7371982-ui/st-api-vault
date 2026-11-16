@@ -30,6 +30,9 @@ export function defaultSettings() {
             notices: true,
             // Row of tag buttons under the search box, in the panel list and the fill picker.
             tagBar: false,
+            // List order in the panel and the fill picker (see SORTS), and the ids in the user's own order.
+            sort: 'recent',
+            order: [],
         },
     };
 }
@@ -254,8 +257,48 @@ export function searchProfiles(profiles, query) {
     });
 }
 
-export function sortProfiles(profiles) {
-    return [...profiles].sort((a, b) => (b.usedAt - a.usedAt) || (b.createdAt - a.createdAt));
+/** List orders the user can pick, [value, label]. "custom" is the drag / arrow order. */
+export const SORTS = [
+    ['recent', '最近使用'],
+    ['frequent', '最常用'],
+    ['newest', '最新添加'],
+    ['name', '名称顺序'],
+    ['custom', '自定义顺序'],
+];
+export const normalizeSort = s => (SORTS.some(([v]) => v === s) ? s : 'recent');
+
+const byName = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+
+/**
+ * @param {string} [mode] one of SORTS; defaults to most recently used.
+ * @param {string[]} [order] profile ids in the user's own order, for "custom". Unlisted ones go last, newest first.
+ */
+export function sortProfiles(profiles, mode = 'recent', order = []) {
+    const recent = (a, b) => (b.usedAt - a.usedAt) || (b.createdAt - a.createdAt);
+    const pos = new Map(order.map((id, i) => [id, i]));
+    const cmp = {
+        recent,
+        frequent: (a, b) => (b.useCount - a.useCount) || recent(a, b),
+        newest: (a, b) => b.createdAt - a.createdAt,
+        name: (a, b) => byName.compare(a.name, b.name) || recent(a, b),
+        custom: (a, b) => (pos.get(a.id) ?? Infinity) - (pos.get(b.id) ?? Infinity) || b.createdAt - a.createdAt,
+    }[normalizeSort(mode)];
+    return [...profiles].sort(cmp);
+}
+
+/**
+ * Moves `id` one step up or down in the custom order. The order starts from what the user sees now
+ * (`shown`), so switching to "自定义顺序" for the first time keeps the current list as the starting point.
+ */
+export function moveInOrder(order, shown, id, step) {
+    const ids = shown.map(p => p.id);
+    const list = [...order.filter(x => ids.includes(x)), ...ids.filter(x => !order.includes(x))];
+    const i = list.indexOf(id);
+    const j = i + step;
+    if (i < 0 || j < 0 || j >= list.length) return null;
+    [list[i], list[j]] = [list[j], list[i]];
+    // Keep ids hidden by a search / tag filter where they were.
+    return [...list, ...order.filter(x => !ids.includes(x))];
 }
 
 /** Tags in use, most used first. */

@@ -6,6 +6,7 @@ import {
     eventTarget, deepActiveElement, shadowRootOf, closestComposed, fieldPlace,
 } from './detect.js';
 import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
+import { st } from './st.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey, tagList, tagBarHtml } from './vault.js';
@@ -16,6 +17,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // ST's own reverse proxy URL / password inputs. They mirror the selected proxy preset.
 const ST_PROXY_FIELDS = new Set(['openai_reverse_proxy', 'openai_proxy_access_key']);
 export const KIND_LABEL = { [KIND.KEY]: '密钥', [KIND.URL]: '地址' };
+
+/** The secrets.json slot an ST API key box saves into (its name, e.g. "api_key_custom"), or ''. */
+function stKeySlot(el) {
+    // A URL box without a key box next to it (most plugins with only an endpoint field) has no partner.
+    if (!el) return '';
+    const slot = el.getAttribute('name') || '';
+    if (!/^api_key_[a-z0-9_]+$/.test(slot) || shadowRootOf(el) || !el.closest('#rm_api_block')) return '';
+    return st.secretKeys().includes(slot) ? slot : '';
+}
 const other = kind => (kind === KIND.KEY ? KIND.URL : KIND.KEY);
 
 let target = null; // { el, kind }
@@ -267,6 +277,24 @@ export async function fillProfile(profile, el = target?.el, { quiet = false, kee
     }
     const kind = classifyElement(el) || target?.kind;
     if (!kind) return false;
+    // ST's own API key boxes (#api_key_custom, ...). Typing a key there and pressing 连接 makes ST append
+    // it to secrets.json again every time, so each switch added one more identical row to 管理密钥.
+    // Switch ST's stored secret instead: an existing copy is reused, a new key is written once.
+    // Picking from the URL box above it (custom_api_url_text) would type the key into it too.
+    const slot = stKeySlot(kind === KIND.KEY ? el : findPartner(el, KIND.KEY));
+    if (slot) {
+        if (quiet) return false;
+        try {
+            const what = await syncToST(profile, slot, { remember: false });
+            const cur = store.get(profile.id) || profile;
+            toastr.success(`酒馆的「${esc(what)}」现在使用「${esc(cur.name)}」`, TITLE, { timeOut: 1800 });
+            emit();
+            return true;
+        } catch (err) {
+            toastr.error(esc(err.message || String(err)), TITLE);
+            return false;
+        }
+    }
     const key = await resolveKey(profile);
     const p = store.get(profile.id) || profile;
     const values = { [KIND.URL]: p.url, [KIND.KEY]: key };
@@ -367,13 +395,14 @@ export function focusTarget() {
  * The floating plugin window `el` sits in: its nearest position:fixed ancestor. Null when there is none,
  * or when that window would clip our fixed nodes (it is their containing block and hides overflow).
  */
-function floatingWindowOf(el) {
+function floatingWindowOf(el, { any = false } = {}) {
     // Walks up through shadow boundaries too: a Vue / Lit plugin's window usually lives in a shadow root.
     const up = n => n.parentElement || shadowRootOf(n)?.host || null;
     for (let n = up(el); n && n !== document.body && n !== document.documentElement; n = up(n)) {
         const cs = getComputedStyle(n);
         if (cs.position !== 'fixed') continue;
-        return containsFixed(n) && cs.overflow !== 'visible' ? null : n;
+        // `any`: the window itself, even one that cannot hold our nodes.
+        return !any && containsFixed(n) && cs.overflow !== 'visible' ? null : n;
     }
     return null;
 }
@@ -474,7 +503,75 @@ function schedule() {
     });
 }
 
+// ---------- outside-press shield ----------
+// Some plugin windows cannot hold the key button (a transformed window that hides overflow would clip it),
+// so it sits on <body>. Those windows usually close on any press outside them, which the key button then
+// is: the window, the field and the target vanish, and the old fallback opened the manager instead.
+// While the button or the picker is shown away from its field's window, presses on them are stopped at
+// `window` in the capture phase, before any page or plugin listener sees them. Clicks still reach the
+// button / picker rows through their own listeners below.
+const PRESS_EVENTS = ['pointerdown', 'mousedown', 'touchstart'];
+let shieldOn = false;
+
+function onShieldPress(e) {
+    const t = eventTarget(e);
+    if (!(t instanceof Element) || !t.closest('.avm-pill, .avm-pop, .avm-backdrop:not(.avm-panel-backdrop)')) return;
+    // stopPropagation at window (capture) also stops the event before it reaches our own nodes, so the
+    // few things they do on a press are done here instead.
+    e.stopPropagation();
+    if (t.closest('.avm-pill')) {
+        if (e.type === 'pointerdown') onPillPress(e);
+        // Keep focus in the field so the target does not change.
+        if (e.type === 'mousedown') e.preventDefault();
+    } else if (t.closest('.avm-pop') && e.type === 'mousedown' && !t.closest('.avm-pop input')) {
+        e.preventDefault();
+    }
+}
+
+function setShield(on) {
+    if (on === shieldOn) return;
+    shieldOn = on;
+    for (const type of PRESS_EVENTS) {
+        if (on) window.addEventListener(type, onShieldPress, { capture: true, passive: false });
+        else window.removeEventListener(type, onShieldPress, { capture: true });
+    }
+}
+
+// ST's top bar panels (插头 API 连接, 扩展, 用户设置, ...) close when a press lands outside them
+// (script.js: $('html').on('touchstart mousedown') toggles every .openDrawer that is not pinned).
+const ST_DRAWER = '.drawer-content.openDrawer';
+
+/** Whether the button sits outside the window or ST panel of the field it belongs to. */
+function needsShield() {
+    if (!target?.el) return false;
+    const host = targetHost();
+    if (host === document.body) {
+        return !!floatingWindowOf(target.el, { any: true }) || !!closestComposed(target.el, ST_DRAWER);
+    }
+    // Mounted inside the field's own window, but still outside an ST panel that sits within it.
+    const drawer = closestComposed(target.el, ST_DRAWER);
+    return !!drawer && !drawer.contains(host.nodeType === 11 ? host.host : host);
+}
+
 // ---------- inline pill ----------
+
+// Runs once per press, from the pill's own listener or from the shield (whichever sees it first).
+let lastPress = null;
+function onPillPress(e) {
+    if (e && e === lastPress) return;
+    lastPress = e || null;
+    pressAt = Date.now();
+    rescued = false;
+    // Some windows still close on the press (they listen before us). The pill goes with them and
+    // `click` never arrives, so check shortly after: no field left means open the manager instead.
+    clearTimeout(rescueTimer);
+    rescueTimer = setTimeout(() => {
+        if (currentTarget()) return;
+        rescued = true;
+        hidePill();
+        openPanel();
+    }, 350);
+}
 
 function ensurePill() {
     if (pill) return pill;
@@ -485,19 +582,7 @@ function ensurePill() {
     pill.setAttribute('aria-label', '从通用钥匙API管理器选择');
     // Keep focus in the field so the target does not change.
     pill.addEventListener('mousedown', e => e.preventDefault());
-    pill.addEventListener('pointerdown', () => {
-        pressAt = Date.now();
-        rescued = false;
-        // Some windows still close on the press (they listen before us). The pill goes with them and
-        // `click` never arrives, so check shortly after: no field left means open the manager instead.
-        clearTimeout(rescueTimer);
-        rescueTimer = setTimeout(() => {
-            if (currentTarget()) return;
-            rescued = true;
-            hidePill();
-            openPanel();
-        }, 350);
-    });
+    pill.addEventListener('pointerdown', onPillPress);
     pill.addEventListener('click', () => {
         clearTimeout(rescueTimer);
         if (rescued) return;
@@ -564,6 +649,7 @@ let settleTimers = [];
 
 function showPill() {
     pillShown = true;
+    setShield(needsShield());
     updatePill();
     // Plugin popups often animate in (scale / slide). Re-place a few times while that settles,
     // instead of waiting for the next scroll or resize to correct the position.
@@ -574,6 +660,7 @@ function showPill() {
 function hidePill() {
     pillShown = false;
     pill?.remove();
+    if (!pop?.isConnected) setShield(false);
 }
 
 // ---------- quick picker ----------
@@ -641,7 +728,7 @@ function popRows() {
     const q = pop.querySelector('input').value;
     const boundId = t?.binding?.profileId;
     const tag = activePopTag();
-    const list = sortProfiles(searchProfiles(store.profiles, q))
+    const list = sortProfiles(searchProfiles(store.profiles, q), store.options.sort, store.options.order)
         .filter(p => !tag || p.tags.includes(tag))
         .sort((a, b) => (b.id === boundId) - (a.id === boundId));
     const usable = list.filter(p => canFill(p, t.kind));
@@ -751,6 +838,7 @@ function closePop(refocus = false) {
     pop.remove();
     backdrop?.remove();
     pill?.classList.remove('is-open');
+    if (!pillShown) setShield(false);
     if (refocus && !isCompact() && target?.el.isConnected) target.el.focus({ preventScroll: true });
 }
 
@@ -770,6 +858,11 @@ async function pick(id) {
 }
 
 function onPopKey(e) {
+    // The field went away (its window closed) while the picker was open.
+    if (!currentTarget()) {
+        if (e.key === 'Escape') e.preventDefault();
+        return closePop(false);
+    }
     const { usable } = popRows();
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();

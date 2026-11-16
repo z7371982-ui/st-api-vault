@@ -401,6 +401,58 @@
     gap: 8px;
 }
 
+.avm-sortbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+}
+
+.avm-sort {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.84em;
+    color: var(--avm-muted);
+}
+
+.avm-root .avm-sort select {
+    width: auto;
+    min-width: 0;
+    height: 30px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid var(--avm-line);
+    border-radius: 8px;
+    background: var(--avm-input-bg);
+    color: var(--avm-fg);
+    font: inherit;
+}
+
+.avm-root .avm-sort select option {
+    background: var(--avm-theme-input, var(--SmartThemeChatTintColor, #222));
+    color: var(--avm-fg);
+}
+
+.avm-root .avm-sort select:focus {
+    border-color: var(--avm-accent);
+    outline: 0;
+}
+
+.avm-sortbar .avm-hint {
+    flex: 1 1 100%;
+}
+
+.avm-move {
+    display: inline-flex;
+    gap: 2px;
+}
+
+.avm-card:first-child [data-act="move-up"],
+.avm-card:last-child [data-act="move-down"] {
+    opacity: 0.35;
+}
+
 .avm-search {
     display: flex;
     align-items: center;
@@ -1631,11 +1683,12 @@
         top: auto;
         left: 0;
         right: 0;
-        bottom: var(--avm-kb, 0px);
+        bottom: calc(var(--avm-kb, 0px) + var(--avm-sheet-bottom, 0px));
         width: auto;
         height: calc(var(--avm-vh, 1vh) * 88 - var(--avm-kb, 0px));
         max-height: calc(var(--avm-vh, 1vh) * 100 - var(--avm-kb, 0px) - 12px);
-        min-height: 0;
+        /* Never collapse to nothing under a stale viewport reading while the dark backdrop is up. */
+        min-height: min(320px, 70vh);
         border-left: 0;
         border-top: 1px solid var(--avm-line);
         border-radius: 20px 20px 0 0;
