@@ -158,7 +158,8 @@ dialog.avm-capture-layer[open] {
     top: 0;
     right: 0;
     z-index: 9990;
-    display: flex;
+    /* An offscreen translated drawer increases the document width on tablet browsers. */
+    display: none;
     flex-direction: column;
     /* Fallback first for browsers without min() (Chrome < 79). */
     width: 420px;
@@ -170,15 +171,11 @@ dialog.avm-capture-layer[open] {
     backdrop-filter: var(--avm-theme-filter, blur(var(--SmartThemeBlurStrength, 12px)) saturate(1.2));
     border-left: 1px solid var(--avm-line);
     box-shadow: var(--avm-shadow);
-    transform: translateX(105%);
-    visibility: hidden;
-    transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s linear 0.28s;
 }
 
 .avm-panel.is-open {
-    transform: none;
+    display: flex;
     visibility: visible;
-    transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .avm-head {
@@ -1861,7 +1858,6 @@ dialog.avm-capture-layer[open] {
         border-top: 1px solid var(--avm-line);
         border-radius: 20px 20px 0 0;
         padding-bottom: env(safe-area-inset-bottom);
-        transform: translateY(105%);
     }
 
     .avm-panel-layer > .avm-panel,

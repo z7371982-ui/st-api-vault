@@ -29,7 +29,7 @@ export function trackViewport() {
         // Phone WebViews report 0 or a tiny height for a moment (app switch, keyboard closing, page in the
         // background). A sheet sized from that is invisible while its dark backdrop still covers the page,
         // so such readings fall back to the last good one or the screen height.
-        let h = innerHeight || document.documentElement.clientHeight;
+        let h = document.documentElement.clientHeight || innerHeight;
         if (!(h >= 200)) h = lastH || Math.max(document.documentElement.clientHeight || 0, screen?.height || 0, 480);
         lastH = h;
         root.setProperty('--avm-vh', `${h / 100}px`);
@@ -67,8 +67,9 @@ export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
     // the key shrank to a 1-2px sliver at the top edge and could not be tapped until the next resize.
     let lastView = null;
     const viewport = () => {
-        const w = innerWidth || document.documentElement.clientWidth;
-        const h = innerHeight || document.documentElement.clientHeight;
+        // On zoomable mobile pages innerWidth can include overflow outside the layout viewport.
+        const w = document.documentElement.clientWidth || innerWidth;
+        const h = document.documentElement.clientHeight || innerHeight;
         if (w >= 120 && h >= 200) lastView = { width: w, height: h };
         return lastView || { width: Math.max(320, w || 0), height: Math.max(480, h || 0) };
     };
