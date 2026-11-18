@@ -6,8 +6,9 @@
 import { store } from './store.js';
 import { st } from './st.js';
 import { proxy } from './proxy.js';
+import { offerCaptures, captureEnabled } from './capture.js';
 import { scanExtensionSettings, readAt, writeAt } from './scan.js';
-import { hashKey, findProfileByPair, maskMatches, extRefId, proxyHash, urlIdentity, sameUrl } from './vault.js';
+import { hashKey, findProfileByPair, extImportRef, extRefId, proxyHash, urlIdentity, sameUrl } from './vault.js';
 
 const ST_SOURCE = '酒馆';
 const PROXY_SOURCE = '反向代理';
@@ -16,18 +17,108 @@ const DATE_LABEL = /^\d{1,4}[/.\-年]\d{1,2}/;
 
 let ctx = null;
 let busyUntil = 0;
-let importTimer = null;
-let reconcileTimer = null;
+let syncTimer = null;
+let pendingSync = null;
+let syncRunning = false;
+let retrySecretRead = false;
 // Runtime only: "<slot>:<id>" of secrets ST currently uses, and the selected proxy preset.
 const activeRefs = new Set();
 let activeProxy = '';
+let proxyInUse = false;
 
 export function initSync(context) {
     ctx = context;
 }
 
+const observed = new Set();
+let secretsPrimed = false;
+let proxiesPrimed = false;
+let captureReady;
+
+/** Inspect source identities before constructing candidates or reading key exposure settings. */
+function selectSources({ state, presets, extensions }, include) {
+    const selectedState = {};
+    for (const [slot, rows] of Object.entries(state || {})) {
+        if (!Array.isArray(rows)) continue;
+        const selected = rows.filter(row => row?.id && include(slot + ':' + row.id, 'secret'));
+        if (selected.length) selectedState[slot] = selected;
+    }
+    return {
+        state: Object.keys(selectedState).length ? selectedState : null,
+        presets: { ...presets, list: (presets.list || []).filter(p => include('proxy:' + proxyHash(p.url, p.password), 'proxy')) },
+        extensions: extensions.filter(e => include(extImportRef(e.source, e.key, e.url), 'extension')),
+    };
+}
+
+export function primeCapture() {
+    const extensions = scanExtensionSettings(ctx.extensionSettings);
+    captureReady = Promise.all([st.initialState().catch(() => null), proxy.list().catch(() => null)])
+        .then(([state, list]) => {
+            selectSources({ state, presets: { list }, extensions }, ref => { observed.add(ref); return false; });
+            secretsPrimed = state !== null;
+            proxiesPrimed = list !== null;
+        });
+}
+
+async function discoverForCapture(sources) {
+    await captureReady;
+    const enabled = captureEnabled();
+    const fresh = selectSources(sources, (ref, type) => {
+        if (observed.has(ref)) return false;
+        observed.add(ref);
+        return enabled && (type !== 'secret' || secretsPrimed) && (type !== 'proxy' || proxiesPrimed);
+    });
+    if (sources.state !== null) secretsPrimed = true;
+    if (sources.presets.list !== null) proxiesPrimed = true;
+    if (!fresh.state && !fresh.presets.list.length && !fresh.extensions.length) return;
+    const { items } = await collectCandidates(fresh);
+    offerCaptures(items.filter(it => !it.existing && !it.removed && (it.key || it.keyHint || it.url)));
+}
+
+/** Re-read only the sources represented in the selection before applying the user's decision. */
+export async function saveCaptured(groups) {
+    const all = groups.flat();
+    const saved = all.filter(it => it.ref);
+    let added = 0;
+    if (saved.length) {
+        const selectedRefs = new Map();
+        for (const it of saved) for (const ref of it.sourceRefs) selectedRefs.set(ref, it);
+        const [state, list] = await Promise.all([
+            saved.some(it => it.stRef) ? st.state() : null,
+            saved.some(it => it.proxyRef) ? proxy.list() : [],
+        ]);
+        const extensions = saved.some(it => it.extRefs.length) ? scanExtensionSettings(ctx.extensionSettings) : [];
+        const sources = selectSources({ state, presets: { list }, extensions }, ref => selectedRefs.has(ref));
+        const { items } = await collectCandidates(sources);
+        if (!captureEnabled()) return 0;
+        const removed = new Set(store.settings.removedRefs);
+        const eligible = items.filter(it => {
+            const original = selectedRefs.get(it.ref);
+            return original && !it.removed && !it.sourceRefs.some(ref => removed.has(ref))
+                && (!it.stRef || (it.keyHint === original.keyHint && urlIdentity(it.url) === urlIdentity(original.url)));
+        });
+        if (eligible.length) added = importItems(eligible).added;
+    }
+    if (!captureEnabled()) return added;
+    for (const group of groups) {
+        // A saved source takes precedence over a field that may since have been cleared.
+        if (!group.some(it => it.ref) && group[0].saveField?.()) added++;
+    }
+    return added;
+}
+
 const refKey = r => `${r.key}:${r.id}`;
 const niceLabel = l => (l && !DATE_LABEL.test(l) ? l : '');
+
+function requireLiveProfile(p, sourceRef) {
+    if (store.get(p.id) === p) return;
+    // A write already in flight can finish after a local delete. Keep the returned source excluded too.
+    if (sourceRef && !store.settings.removedRefs.includes(sourceRef)) {
+        store.settings.removedRefs.push(sourceRef);
+        store.save();
+    }
+    throw new Error('此配置已移除，已停止同步');
+}
 
 export function isActiveInST(p) {
     if (p.proxyRef && !p.proxyMissing && activeProxy && p.proxyRef.name === activeProxy && st.proxyInUse()) return true;
@@ -40,6 +131,7 @@ async function linkNewProxy(p) {
     if (!p.url) return '';
     const r = await proxy.create({ name: p.name, url: p.url, password: p.key });
     if (!r) return '';
+    requireLiveProfile(p, 'proxy:' + proxyHash(r.url, r.password));
     p.proxyRef = { name: r.name, hash: proxyHash(r.url, r.password) };
     p.proxyMissing = false;
     store.settings.seenRefs.push(`proxy:${p.proxyRef.hash}`);
@@ -65,14 +157,30 @@ export async function resolveKey(profile) {
     return '';
 }
 
-function matchExisting(candidate, raw) {
-    const { key, id } = candidate.stRef;
-    return store.profiles.find(p => p.stRef?.key === key && p.stRef?.id === id)
-        || (raw
-            ? findProfileByPair(store.profiles, raw, candidate.url)
-            : store.profiles.find(p => !p.stRef && (!p.syncTarget || p.syncTarget === key)
-                && (!p.url || !candidate.url || sameUrl(p.url, candidate.url)) && maskMatches(p.key, candidate.keyHint)))
-        || null;
+/** Per scan/batch. Preserve profile order when several saved profiles match the same key. */
+function importIndex() {
+    const byKey = new Map(), byRef = new Map(), position = new Map();
+    const add = (map, key, p) => {
+        const bucket = map.get(key);
+        if (!bucket) {
+            map.set(key, [p]);
+            return;
+        }
+        const outOfOrder = position.get(bucket[bucket.length - 1]) > position.get(p);
+        bucket.push(p);
+        if (outOfOrder) bucket.sort((a, b) => position.get(a) - position.get(b));
+    };
+    const index = (p, keyChanged = true, refChanged = true) => {
+        if (!position.has(p)) position.set(p, position.size);
+        if (keyChanged && p.key) add(byKey, p.key, p);
+        if (refChanged && p.stRef) add(byRef, refKey(p.stRef), p);
+    };
+    for (const p of store.profiles) index(p);
+    return {
+        index,
+        linked: ref => byRef.get(ref)?.find(p => p.stRef && refKey(p.stRef) === ref),
+        pair: (key, url) => findProfileByPair(byKey.get(key?.trim()) || [], key, url),
+    };
 }
 
 function mergeExtRefs(current, incoming) {
@@ -98,12 +206,12 @@ function claimExtRefs(owner, refs) {
  * so a later key change in the vault is written there too. Runs after a fill: the plugin has
  * saved what was typed into its field by then. Returns how many new places were linked.
  */
-export function linkExtensionsFor(profileId) {
+export function linkExtensionsFor(profileId, candidates) {
     const p = store.get(profileId);
     if (!p?.key) return 0;
     const known = new Set(p.extRefs.map(extRefId));
     const fresh = [];
-    for (const s of scanExtensionSettings(ctx.extensionSettings)) {
+    for (const s of candidates ?? scanExtensionSettings(ctx.extensionSettings)) {
         if (s.key !== p.key || (s.url && p.url && !sameUrl(s.url, p.url))) continue;
         for (const r of s.refs) if (!known.has(extRefId(r))) fresh.push(r);
     }
@@ -125,12 +233,24 @@ function connectionProfileNames() {
 }
 
 /** Everything importable right now: ST secrets, proxy presets, and URL/key pairs in other extensions. */
-export async function collectCandidates() {
-    const canView = await st.canView();
+export async function collectCandidates({ state, extensions, presets } = {}) {
+    const canView = state !== null && await st.canView();
     const items = [];
     const cm = connectionProfileNames();
 
-    for (const c of await st.candidates()) {
+    // A masked group is a display group only. Keep each id independently selectable.
+    const groups = new Map();
+    for (const c of state === null ? [] : await st.candidates(state)) {
+        const raw = canView && !c.value.includes('*') ? c.value : '';
+        const url = urlIdentity(cm.get(c.id)?.url || c.url);
+        const id = JSON.stringify([c.key, url, raw ? 'exact' : 'mask', raw || c.value]);
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(c);
+    }
+    const lookup = importIndex();
+    const pick = list => list.find(c => lookup.linked(refKey(c))) || list.find(c => c.active)
+        || list.find(c => niceLabel(c.label)) || list[0];
+    const addSecret = (c, list, choiceGroup = null) => {
         const raw = canView && !c.value.includes('*') ? c.value : '';
         const named = cm.get(c.id);
         const realName = niceLabel(c.label) || named?.name || '';
@@ -141,21 +261,33 @@ export async function collectCandidates() {
             name: realName || c.name,
             realName,
             label: c.label,
-            url: c.url || named?.url || '',
+            url: named?.url || c.url || '',
             key: raw,
             keyHint: c.value,
             stRef: { key: c.key, id: c.id },
             proxyRef: null,
             extRefs: [],
-            active: c.active,
+            active: list.some(x => x.active),
+            copies: list.length,
+            sourceRefs: list.map(refKey),
+            choiceGroup,
         };
-        item.existing = matchExisting(item, raw);
+        item.existing = lookup.linked(item.ref) || (raw && lookup.pair(raw, item.url)) || null;
         items.push(item);
+    };
+    for (const list of groups.values()) {
+        const c = pick(list);
+        if (list.length > 1 && !(canView && c.value && !c.value.includes('*'))) {
+            const choiceGroup = items.length;
+            for (const member of list) addSecret(member, [member], choiceGroup);
+        } else {
+            addSecret(c, list);
+        }
     }
 
     try {
-        const selected = await proxy.selectedName();
-        for (const pr of await proxy.list()) {
+        const selected = presets ? presets.selected : await proxy.selectedName();
+        for (const pr of (presets ? presets.list || [] : await proxy.list())) {
             const hash = proxyHash(pr.url, pr.password);
             items.push({
                 ref: `proxy:${hash}`,
@@ -172,7 +304,7 @@ export async function collectCandidates() {
                 active: pr.name === selected,
                 existing: store.profiles.find(p => p.proxyRef?.name === pr.name)
                     || store.profiles.find(p => p.proxyRef?.hash === hash)
-                    || findProfileByPair(store.profiles, pr.password, pr.url),
+                    || lookup.pair(pr.password, pr.url),
             });
         }
     } catch (err) {
@@ -180,9 +312,9 @@ export async function collectCandidates() {
     }
 
     try {
-        for (const s of scanExtensionSettings(ctx.extensionSettings)) {
+        for (const s of extensions ?? scanExtensionSettings(ctx.extensionSettings)) {
             items.push({
-                ref: `ext:${s.source}:${hashKey(`${s.key}\n${urlIdentity(s.url)}`)}`,
+                ref: extImportRef(s.source, s.key, s.url),
                 source: s.source,
                 provider: s.source,
                 name: s.name,
@@ -193,30 +325,48 @@ export async function collectCandidates() {
                 stRef: null,
                 proxyRef: null,
                 extRefs: s.refs,
-                existing: findProfileByPair(store.profiles, s.key, s.url),
+                existing: lookup.pair(s.key, s.url),
             });
         }
     } catch (err) {
         console.warn('[API Vault] extension settings scan failed', err);
     }
 
+    const removed = new Set(store.settings.removedRefs);
+    const seen = new Set(store.settings.seenRefs);
+    for (const it of items) {
+        it.sourceRefs ??= [it.ref];
+        it.removed = !it.existing && it.sourceRefs.some(r => removed.has(r) || seen.has(r));
+    }
     return { canView, items };
 }
 
 /** Imports candidates. Ones that match an existing profile only fill its gaps, so nothing is duplicated. */
 export function importItems(items) {
+    return store.batch(() => applyImport(items));
+}
+
+function applyImport(items) {
+    const lookup = importIndex();
     const seen = new Set(store.settings.seenRefs);
+    const removed = new Set(store.settings.removedRefs);
     let added = 0;
     let linked = 0;
 
     for (const it of items) {
-        seen.add(it.ref);
+        const sourceRefs = it.sourceRefs || [it.ref];
+        for (const r of sourceRefs) {
+            seen.add(r);
+            removed.delete(r);
+        }
         // Earlier items in this same batch may already have created or completed a profile.
-        const p = (it.stRef && matchExisting(it, it.key))
+        const p = (it.stRef && lookup.linked(refKey(it.stRef)))
             || (it.proxyRef && store.profiles.find(p => p.proxyRef?.name === it.proxyRef.name || p.proxyRef?.hash === it.proxyRef.hash))
-            || findProfileByPair(store.profiles, it.key, it.url);
+            || lookup.pair(it.key, it.url);
         if (p) {
             const patch = { id: p.id };
+            const knownRefs = new Set(p.importRefs);
+            if (sourceRefs.some(r => !knownRefs.has(r))) patch.importRefs = [...new Set([...knownRefs, ...sourceRefs])];
             if (it.stRef && (!p.stRef || p.stMissing)) {
                 patch.stRef = it.stRef;
                 patch.stLabel = it.label || '';
@@ -240,6 +390,7 @@ export function importItems(items) {
             claimExtRefs(p, it.extRefs);
             if (Object.keys(patch).length > 1) {
                 store.upsert(patch);
+                lookup.index(p, !!patch.key, !!patch.stRef);
                 linked++;
             }
             continue;
@@ -251,6 +402,7 @@ export function importItems(items) {
             key: it.key,
             keyHint: it.keyHint,
             stRef: it.stRef,
+            importRefs: sourceRefs,
             stLabel: it.label || '',
             proxyRef: it.proxyRef,
             // Empty = "用于酒馆" goes through a proxy preset. Masked-only secrets fall back to their slot in syncToST.
@@ -261,31 +413,40 @@ export function importItems(items) {
             tags: [ST_SOURCE, PROXY_SOURCE].includes(it.source) ? [it.source] : [],
         });
         claimExtRefs(created, it.extRefs);
+        lookup.index(created);
         added++;
     }
 
-    store.settings.seenRefs = [...seen].slice(-500);
+    store.settings.seenRefs = [...seen];
+    store.settings.removedRefs = [...removed];
     store.save();
     return { added, linked };
 }
 
 /** Imports only what has never been looked at, so profiles the user deleted stay deleted. */
-export async function autoImport({ silent = false } = {}) {
+export async function autoImport({ silent = false, sources } = {}) {
     if (Date.now() < busyUntil) {
-        scheduleImport();
+        scheduleSync({ secrets: sources?.state !== null, discover: true });
         return;
     }
-    const { items } = await collectCandidates();
+    const { items } = await collectCandidates(sources);
+    if (!store.options.autoImport) return;
     const seen = new Set(store.settings.seenRefs);
-    // Known keys showing up in new extension locations are linked even if the ref was seen before.
-    // Only genuinely new locations count, otherwise every settings save would re-import and save again.
-    const hasNewRef = it => {
-        const p = it.existing && store.get(it.existing.id);
-        if (!p || !it.extRefs?.length) return false;
-        const known = new Set(p.extRefs.map(extRefId));
-        return it.extRefs.some(r => !known.has(extRefId(r)));
-    };
-    const fresh = items.filter(it => !seen.has(it.ref) || hasNewRef(it));
+    const removed = new Set(store.settings.removedRefs);
+    const owners = new Map();
+    for (const p of store.profiles) for (const r of p.extRefs) owners.set(extRefId(r), p);
+    const fresh = [];
+    for (const it of items) {
+        if (it.choiceGroup != null || it.removed || it.sourceRefs.some(r => removed.has(r))) continue;
+        // An explicit fill may have assigned a matching location to a different profile with the same key.
+        const unlinked = it.extRefs.filter(r => {
+            const owner = owners.get(extRefId(r));
+            return !owner || owner.key !== it.key || (owner.url && it.url && !sameUrl(owner.url, it.url));
+        });
+        if (it.sourceRefs.some(r => !seen.has(r)) || (it.existing && unlinked.length)) {
+            fresh.push({ ...it, extRefs: unlinked });
+        }
+    }
     if (!fresh.length) return;
     const { added } = importItems(fresh);
     if (added && !silent) {
@@ -293,19 +454,44 @@ export async function autoImport({ silent = false } = {}) {
     }
 }
 
-/** Debounced import, used when ST reports a newly written secret. */
-export function scheduleImport() {
-    clearTimeout(importTimer);
-    importTimer = setTimeout(() => autoImport().catch(err => console.warn('[API Vault] import failed', err)), 1000);
+/** Merge bursts of host events. A later settings save must not cancel a pending secret refresh. */
+export function scheduleSync({ secrets = false, discover = false, delay = 800 } = {}) {
+    pendingSync = { secrets: secrets || !!pendingSync?.secrets, discover: discover || !!pendingSync?.discover };
+    clearTimeout(syncTimer);
+    if (!syncRunning) syncTimer = setTimeout(runScheduledSync, delay);
+}
+
+async function runScheduledSync() {
+    const job = pendingSync;
+    pendingSync = null;
+    syncRunning = true;
+    try {
+        const needsSecrets = job.secrets || retrySecretRead;
+        const state = needsSecrets ? await st.state().catch(() => null) : null;
+        retrySecretRead = needsSecrets && state === null;
+        const presets = { list: await proxy.list().catch(() => null), selected: await proxy.selectedName().catch(() => '') };
+        const sources = { state, presets, extensions: scanExtensionSettings(ctx.extensionSettings) };
+        if (job.discover && store.options.autoImport) {
+            if (Date.now() < busyUntil) scheduleSync(job);
+            else await autoImport({ sources });
+        }
+        await reconcile(sources);
+        await discoverForCapture(sources);
+    } catch (err) {
+        console.warn('[API Vault] background sync failed', err);
+    } finally {
+        syncRunning = false;
+        if (pendingSync) syncTimer = setTimeout(runScheduledSync, Math.max(800, busyUntil - Date.now()));
+    }
 }
 
 // ---------- ST / extensions -> vault ----------
 
 /** Follows proxy presets edited, renamed or deleted in ST. Returns true if a profile changed. */
-async function reconcileProxies() {
-    const presets = await proxy.list().catch(() => null);
+async function reconcileProxies(snapshot) {
+    const presets = snapshot ? snapshot.list : await proxy.list().catch(() => null);
     if (!presets) return false;
-    activeProxy = await proxy.selectedName().catch(() => '');
+    activeProxy = snapshot ? snapshot.selected : await proxy.selectedName().catch(() => '');
     let changed = false;
     const byName = new Map(presets.map(x => [x.name, x]));
     const taken = n => store.profiles.some(o => o.proxyRef?.name === n);
@@ -367,19 +553,26 @@ function extensionRefMatches(p, r) {
  * the active key switched, proxy presets edited, and extensions overwriting a key or name the vault linked to.
  * Idempotent, and only saves when something actually changed, so it can run on every settings event.
  */
-export async function reconcile() {
+export async function reconcile({ state: snapshot, presets, extensions } = {}) {
     let changed = false;
+    let activeChanged = false;
+    const previousProxy = activeProxy;
 
-    const state = await st.state().catch(() => null);
+    const state = snapshot === undefined ? await st.state().catch(() => null) : snapshot;
     if (state) {
-        activeRefs.clear();
+        const current = new Set();
         const byRef = new Map();
         for (const [key, list] of Object.entries(state)) {
             if (!Array.isArray(list)) continue;
             for (const s of list) {
                 byRef.set(`${key}:${s.id}`, s);
-                if (s.active) activeRefs.add(`${key}:${s.id}`);
+                if (s.active) current.add(`${key}:${s.id}`);
             }
+        }
+        activeChanged = current.size !== activeRefs.size || [...current].some(id => !activeRefs.has(id));
+        if (activeChanged) {
+            activeRefs.clear();
+            for (const id of current) activeRefs.add(id);
         }
         for (const p of store.profiles) {
             if (!p.stRef) continue;
@@ -417,7 +610,10 @@ export async function reconcile() {
         }
     }
 
-    if (await reconcileProxies()) changed = true;
+    if (await reconcileProxies(presets)) changed = true;
+    const usingProxy = !!(activeProxy || activeRefs.size) && !!st.proxyInUse();
+    activeChanged ||= activeProxy !== previousProxy || usingProxy !== proxyInUse;
+    proxyInUse = usingProxy;
 
     for (const p of store.profiles) {
         if (!p.extRefs.length) continue;
@@ -449,17 +645,35 @@ export async function reconcile() {
     }
 
     // Scripts that read a saved key from their own settings never show a field to fill; link them too.
-    for (const p of store.profiles) {
-        if (p.key && linkExtensionsFor(p.id)) changed = true;
+    const claimed = new Set();
+    for (const p of store.profiles) for (const r of p.extRefs) claimed.add(extRefId(r));
+    const byKey = new Map();
+    for (const s of extensions ?? scanExtensionSettings(ctx.extensionSettings)) {
+        if (!byKey.has(s.key)) byKey.set(s.key, []);
+        byKey.get(s.key).push(s);
+    }
+    // Preserve the existing owner. When several profiles first match a location, use the
+    // same final owner as the old forward scan, without repeatedly moving it and saving.
+    for (let i = store.profiles.length - 1; i >= 0; i--) {
+        const p = store.profiles[i];
+        const fresh = [];
+        for (const s of byKey.get(p.key) || []) {
+            if (s.url && p.url && !sameUrl(s.url, p.url)) continue;
+            for (const r of s.refs) {
+                const id = extRefId(r);
+                if (claimed.has(id)) continue;
+                claimed.add(id);
+                fresh.push(r);
+            }
+        }
+        if (fresh.length) {
+            p.extRefs = mergeExtRefs(p.extRefs, fresh);
+            changed = true;
+        }
     }
 
     if (changed) store.save();
-    else store.notify();
-}
-
-export function scheduleReconcile(delay = 800) {
-    clearTimeout(reconcileTimer);
-    reconcileTimer = setTimeout(() => reconcile().catch(err => console.warn('[API Vault] reconcile failed', err)), delay);
+    else if (activeChanged) store.notify();
 }
 
 // ---------- vault -> ST / extensions ----------
@@ -515,6 +729,7 @@ async function pushKeyToST(p) {
     busyUntil = Date.now() + 3000;
     // The new key is already in the slot: link to that copy instead of adding a duplicate.
     const same = await st.findSame(slot, p.key);
+    requireLiveProfile(p);
     if (same && same.id !== oldId) {
         // The old copy is left in ST: a Connection Manager profile may still point at it.
         if (wasActive && !same.active) await st.rotate(slot, same.id);
@@ -525,6 +740,7 @@ async function pushKeyToST(p) {
     }
     const newId = await st.write(slot, p.key, p.name);
     if (!newId) throw new Error('酒馆没有接受新的密钥');
+    requireLiveProfile(p, slot + ':' + newId);
     store.settings.seenRefs.push(`${slot}:${newId}`);
     // writeSecret activates the new value; put ST's previous active key back if this one was not it.
     const prevActive = !wasActive && [...activeRefs].find(r => r.startsWith(`${slot}:`));
@@ -590,6 +806,7 @@ export async function pushProfile(profile, { isNew = false } = {}) {
  */
 export async function syncToST(profile, target, { remember = true } = {}) {
     const p = store.get(profile.id) || profile;
+    requireLiveProfile(p);
     // A key imported from secrets.json with only a mask cannot become a proxy preset; switch its slot instead.
     const maskedOnly = !p.key && p.stRef && !p.stMissing ? p.stRef.key : '';
     const slotTarget = target || (p.syncTarget && p.syncTarget !== 'none' ? p.syncTarget : '') || maskedOnly;
@@ -626,19 +843,23 @@ export async function syncToST(profile, target, { remember = true } = {}) {
     // The same key may already be stored in this slot (saved by ST's own Connect, another profile, or an
     // earlier switch). Reuse it: writing again only adds another identical row to ST's key list.
     const same = !unchanged && key ? await st.findSame(slot, key) : null;
+    requireLiveProfile(p);
 
     if (unchanged) {
         await st.rotate(p.stRef.key, p.stRef.id);
     } else if (same) {
         if (!same.active) await st.rotate(slot, same.id);
+        requireLiveProfile(p, slot + ':' + same.id);
         store.upsert({ id: p.id, syncTarget, stLabel: same.label || '', stMissing: false });
         store.markSynced(p.id, { key: slot, id: same.id });
         if (!store.settings.seenRefs.includes(`${slot}:${same.id}`)) store.settings.seenRefs.push(`${slot}:${same.id}`);
     } else if (key) {
         const id = await st.write(slot, key, p.name);
         if (!id) throw new Error('酒馆没有接受这个密钥');
+        requireLiveProfile(p, slot + ':' + id);
         // The old copy of this profile in the same slot is now stale.
         if (linked) await st.remove(slot, p.stRef.id).catch(() => {});
+        requireLiveProfile(p, slot + ':' + id);
         store.upsert({ id: p.id, syncTarget, stLabel: p.name, stMissing: false });
         store.markSynced(p.id, { key: slot, id });
         store.settings.seenRefs.push(`${slot}:${id}`);

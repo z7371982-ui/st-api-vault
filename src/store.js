@@ -1,8 +1,10 @@
 // Settings persistence on top of SillyTavern's extension_settings.
-import { MODULE, migrate, createProfile, hashKey } from './vault.js';
+import { MODULE, migrate, createProfile, hashKey, profileImportRefs } from './vault.js';
 
 let ctx = null;
 const listeners = new Set();
+let batchDepth = 0;
+let pendingSave = false;
 
 export const store = {
     init(context) {
@@ -23,8 +25,25 @@ export const store = {
     },
 
     save() {
+        if (batchDepth) {
+            pendingSave = true;
+            return;
+        }
         ctx.saveSettingsDebounced();
         this.notify();
+    },
+
+    batch(fn) {
+        batchDepth++;
+        try {
+            return fn();
+        } finally {
+            batchDepth--;
+            if (batchDepth === 0 && pendingSave) {
+                pendingSave = false;
+                this.save();
+            }
+        }
     },
 
     /** Re-renders listeners without writing settings, for runtime-only changes like ST's active key. */
@@ -68,29 +87,29 @@ export const store = {
     },
 
     remove(id) {
-        const s = this.settings;
-        s.profiles = s.profiles.filter(p => p.id !== id);
-        for (const [fp, b] of Object.entries(s.bindings)) if (b.profileId === id) delete s.bindings[fp];
-        this.save();
+        this.removeMany([id]);
     },
 
     /** Removes several profiles and their bindings with one save. */
     removeMany(ids) {
         const drop = new Set(ids);
         const s = this.settings;
+        const removed = new Set(s.removedRefs);
+        for (const p of s.profiles) {
+            if (drop.has(p.id)) for (const ref of profileImportRefs(p)) removed.add(ref);
+        }
+        s.removedRefs = [...removed];
         s.profiles = s.profiles.filter(p => !drop.has(p.id));
         for (const [fp, b] of Object.entries(s.bindings)) if (drop.has(b.profileId)) delete s.bindings[fp];
         s.options.order = (s.options.order || []).filter(id => !drop.has(id));
         this.save();
     },
 
-    /** Drops every profile and binding. Seen refs go too, so a later scan offers everything again. */
+    /** Keep source exclusions across clears and reloads. Manual import can restore them. */
     clearAll() {
-        const s = this.settings;
-        s.profiles = [];
-        s.bindings = {};
-        s.seenRefs = [];
-        this.save();
+        this.settings.bindings = {};
+        this.settings.options.order = [];
+        this.removeMany(this.profiles.map(p => p.id));
     },
 
     touch(id) {

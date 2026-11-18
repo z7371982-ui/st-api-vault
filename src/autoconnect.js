@@ -73,10 +73,16 @@ function tryConnect() {
     if (!memo || !now || memo.api !== now.api || (memo.source || '') !== now.source) return stop();
     const button = BUTTONS[now.api] && document.querySelector(BUTTONS[now.api]);
     if (!button) return stop();
+    // The text-completion Connect handler saves every populated provider key field, even hidden ones.
+    // Leave pending credentials for the user's explicit Connect action.
+    if (now.api === 'textgenerationwebui'
+        && [...document.querySelectorAll('#textgenerationwebui_api input[id^="api_key_"], #api_key_vllm')].some(el => el.value.trim())) {
+        return stop();
+    }
     attempt++;
     if (isChecking()) {
         // ST (or the user) is already connecting; look again later instead of stacking a second request.
-        timer = setTimeout(tryConnect, WAIT_RESULT);
+        if (attempt < DELAYS.length) timer = setTimeout(tryConnect, WAIT_RESULT);
         return;
     }
     const $ = globalThis.jQuery;

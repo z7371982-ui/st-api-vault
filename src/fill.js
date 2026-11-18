@@ -7,6 +7,7 @@ import {
 } from './detect.js';
 import { resolveKey, syncToST, linkExtensionsFor } from './sync.js';
 import { st } from './st.js';
+import { captureEnabled, offerCaptures } from './capture.js';
 // Phones get a bottom sheet instead of a dropdown, and no refocusing that would pop the keyboard back up.
 import { isCompact, isTouch, swipeToClose } from './sheet.js';
 import { esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, findProfileByPair, sameUrl, guessName, hashKey, tagList, tagBarHtml } from './vault.js';
@@ -33,6 +34,9 @@ let pill = null;
 let pillShown = false;
 let pop = null;
 let popIndex = 0;
+const PICKER_PAGE_SIZE = 40;
+let popPage = 0;
+let displayedUsable = [];
 let popTag = ''; // tag filter in the picker, when the tag bar is on
 let filling = false;
 let frame = 0;
@@ -44,7 +48,6 @@ let rescueTimer = 0;
 let rescued = false;
 let openPanel = () => {};
 const listeners = new Set();
-const prompted = new Set();
 
 function fieldBinding(el) {
     const fp = fingerprint(el);
@@ -685,6 +688,11 @@ function ensurePop() {
             <div class="avm-pop-tags"></div>
         </div>
         <div class="avm-pop-list" role="listbox"></div>
+        <nav class="avm-picker-pages avm-pages" aria-label="配置翻页" hidden>
+            <button type="button" class="avm-btn" data-act="previous">上一页</button>
+            <span></span>
+            <button type="button" class="avm-btn" data-act="next">下一页</button>
+        </nav>
         <div class="avm-pop-foot">
             <button type="button" data-act="capture"><i class="fa-solid fa-floppy-disk"></i>保存当前填写</button>
             <button type="button" data-act="panel"><i class="fa-solid fa-table-cells-large"></i>打开通用钥匙API管理器</button>
@@ -692,6 +700,7 @@ function ensurePop() {
     const input = pop.querySelector('input');
     input.addEventListener('input', () => {
         popIndex = 0;
+        popPage = 0;
         renderPopList();
     });
     input.addEventListener('keydown', onPopKey);
@@ -703,12 +712,18 @@ function ensurePop() {
         if (tagBtn) {
             popTag = tagBtn.dataset.tag;
             popIndex = 0;
+            popPage = 0;
             return renderPopList();
         }
         const row = e.target.closest('.avm-row');
         if (row && !row.classList.contains('is-disabled')) return pick(row.dataset.id);
         const act = e.target.closest('[data-act]')?.dataset.act;
-        if (act === 'capture') {
+        if (act === 'previous' || act === 'next') {
+            popPage += act === 'next' ? 1 : -1;
+            popIndex = popPage * PICKER_PAGE_SIZE;
+            renderPopList();
+            pop.querySelector('.avm-pop-list').scrollTop = 0;
+        } else if (act === 'capture') {
             const el = target?.el;
             closePop(true);
             captureFrom(el);
@@ -723,17 +738,16 @@ function ensurePop() {
     return pop;
 }
 
-function popRows() {
-    const t = currentTarget();
+function popRows(t) {
     const q = pop.querySelector('input').value;
     const boundId = t?.binding?.profileId;
     const tag = activePopTag();
     const list = sortProfiles(searchProfiles(store.profiles, q), store.options.sort, store.options.order)
         .filter(p => !tag || p.tags.includes(tag))
         .sort((a, b) => (b.id === boundId) - (a.id === boundId));
-    const usable = list.filter(p => canFill(p, t.kind));
-    const unusable = list.filter(p => !canFill(p, t.kind));
-    return { t, usable, unusable, boundId };
+    const usable = [], unusable = [];
+    for (const p of list) (canFill(p, t.kind) ? usable : unusable).push(p);
+    return { usable, unusable, boundId };
 }
 
 /** The picker's tag filter, or '' when the tag bar is off or the tag no longer exists. */
@@ -745,7 +759,19 @@ function renderPopList() {
     const t = currentTarget();
     if (!t || !pop) return closePop(false);
     pop.querySelector('.avm-pop-tags').innerHTML = store.options.tagBar ? tagBarHtml(tagList(store.profiles), activePopTag(), 0) : '';
-    const { usable, unusable, boundId } = popRows();
+    const { usable, unusable, boundId } = popRows(t);
+    displayedUsable = usable;
+    const total = usable.length + unusable.length;
+    const pages = Math.max(1, Math.ceil(total / PICKER_PAGE_SIZE));
+    popPage = Math.max(0, Math.min(pages - 1, popPage));
+    const start = popPage * PICKER_PAGE_SIZE;
+    const end = start + PICKER_PAGE_SIZE;
+    if (popIndex < start || popIndex >= Math.min(end, usable.length)) popIndex = start < usable.length ? start : -1;
+    const nav = pop.querySelector('.avm-picker-pages');
+    nav.hidden = pages <= 1;
+    nav.querySelector('span').textContent = `${popPage + 1} / ${pages}`;
+    nav.querySelector('[data-act="previous"]').disabled = popPage === 0;
+    nav.querySelector('[data-act="next"]').disabled = popPage === pages - 1;
     pop.querySelector('.avm-pop-title').innerHTML =
         `<span class="avm-chip">${KIND_LABEL[t.kind]}</span><span class="avm-pop-scope">${esc(t.scope || t.label || '当前输入框')}</span>`;
 
@@ -764,7 +790,8 @@ function renderPopList() {
     } else if (!usable.length && !unusable.length) {
         listEl.innerHTML = '<div class="avm-pop-empty">没有匹配的配置</div>';
     } else {
-        listEl.innerHTML = usable.map((p, i) => row(p, i, false)).join('') + unusable.map(p => row(p, -1, true)).join('');
+        listEl.innerHTML = usable.slice(start, end).map((p, i) => row(p, start + i, false)).join('')
+            + unusable.slice(Math.max(0, start - usable.length), Math.max(0, end - usable.length)).map(p => row(p, -1, true)).join('');
     }
     listEl.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
 }
@@ -818,6 +845,7 @@ function openPop() {
     pop.removeAttribute('style');
     const sheet = updatePopLayout();
     popIndex = 0;
+    popPage = 0;
     popTag = '';
     const input = pop.querySelector('input');
     input.value = '';
@@ -835,6 +863,7 @@ function openPop() {
 
 function closePop(refocus = false) {
     if (!pop?.isConnected) return;
+    displayedUsable = [];
     pop.remove();
     backdrop?.remove();
     pill?.classList.remove('is-open');
@@ -858,17 +887,31 @@ async function pick(id) {
 }
 
 function onPopKey(e) {
+    if (!['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) return;
     // The field went away (its window closed) while the picker was open.
     if (!currentTarget()) {
         if (e.key === 'Escape') e.preventDefault();
         return closePop(false);
     }
-    const { usable } = popRows();
+    const usable = displayedUsable;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         if (!usable.length) return;
-        popIndex = (popIndex + (e.key === 'ArrowDown' ? 1 : -1) + usable.length) % usable.length;
-        renderPopList();
+        if (popIndex < 0) popIndex = e.key === 'ArrowDown' ? 0 : usable.length - 1;
+        else popIndex = (popIndex + (e.key === 'ArrowDown' ? 1 : -1) + usable.length) % usable.length;
+        const nextPage = Math.floor(popIndex / PICKER_PAGE_SIZE);
+        if (nextPage !== popPage) {
+            popPage = nextPage;
+            renderPopList();
+        } else {
+            const previous = pop.querySelector('.avm-row.is-active');
+            previous?.classList.remove('is-active');
+            previous?.setAttribute('aria-selected', 'false');
+            const current = pop.querySelectorAll('.avm-row')[popIndex % PICKER_PAGE_SIZE];
+            current.classList.add('is-active');
+            current.setAttribute('aria-selected', 'true');
+            current.scrollIntoView({ block: 'nearest' });
+        }
     } else if (e.key === 'Enter') {
         e.preventDefault();
         if (usable[popIndex]) pick(usable[popIndex].id);
@@ -984,17 +1027,22 @@ function onChange(e) {
     if (!(el instanceof Element) || el.closest('.avm-root')) return;
     const kind = classifyElement(el);
     if (!kind) return;
-    if (autoBind(el, kind) || !store.options.capture) return;
-    const { key, url } = readPair(el, kind);
-    const pair = JSON.stringify([key, url]);
-    if (key.length < 8 || UUID.test(key) || /\s/.test(key) || prompted.has(pair) || findProfileByPair(store.profiles, key, url)) return;
-    prompted.add(pair);
-    const where = url ? `（${esc(hostOf(url) || url)}）` : '';
-    toastr.info(`发现新的密钥${where}，点这里存进管理器`, TITLE, {
-        timeOut: 7000,
-        extendedTimeOut: 3000,
-        onclick: () => captureFrom(el),
-    });
+    if (autoBind(el, kind) || !captureEnabled()) return;
+    const { key, url, partner } = readPair(el, kind);
+    // Native forms may clear or mask the text as soon as they save. Their persisted source has a stable id.
+    if (stKeySlot(kind === KIND.KEY ? el : partner) || ST_PROXY_FIELDS.has(el.id)) return;
+    if (key.length < 8 || UUID.test(key) || /\s/.test(key) || /^[*•]+.{0,4}$/.test(key)) return;
+    const scope = scopeTitle(el);
+    const name = guessName(url, scope);
+    offerCaptures([{ name, source: scope || '当前输入框', url, key, saveField() {
+        if (findProfileByPair(store.profiles, key, url)) return false;
+        const current = el.isConnected && readPair(el, kind);
+        if (current && current.key === key && current.url === url) return !!captureFrom(el);
+        // A plugin can close its editor immediately after saving. Confirm the pair that the dialog displayed.
+        const p = store.upsert({ name, url, key, tags: [] });
+        linkSoon(p.id);
+        return true;
+    } }]);
 }
 
 function onPointerDown(e) {

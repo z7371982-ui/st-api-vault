@@ -113,17 +113,19 @@ export const st = {
     },
 
     async state() {
-        const m = await loadModule();
-        if (m) {
-            await m.readSecretState();
-            return m.secret_state;
-        }
+        // The host's readSecretState also rebuilds every autocomplete option in the DOM.
+        // Only its write/rotate/delete paths need to refresh the host UI.
         return post('/api/secrets/read');
     },
 
+    async initialState() {
+        // Current hosts load this snapshot before loading extensions.
+        return (await loadModule())?.secret_state ?? this.state();
+    },
+
     /** Every saved secret in ST, one entry per stored value. `value` is masked unless exposure is allowed. */
-    async candidates() {
-        const state = await this.state();
+    async candidates(snapshot) {
+        const state = snapshot === undefined ? await this.state() : snapshot;
         const out = [];
         for (const [key, list] of Object.entries(state || {})) {
             if (!Array.isArray(list) || NOT_A_KEY.test(key)) continue;
@@ -210,6 +212,26 @@ export const st = {
             }
         }
         return { canView, groups };
+    },
+
+    /**
+     * Deletes many secrets of one slot. ST's own deleteSecret re-reads the store and reconnects after every
+     * single call, which with thousands of duplicates would hammer the server; this posts the raw deletes and
+     * refreshes ST once at the end. `onProgress(done, total)` reports along the way.
+     */
+    async removeMany(key, ids, onProgress = () => {}) {
+        let done = 0;
+        for (const id of ids) {
+            await post('/api/secrets/delete', { key, id });
+            done++;
+            if (done % 50 === 0 || done === ids.length) onProgress(done, ids.length);
+        }
+        const m = await loadModule();
+        if (m) {
+            await m.readSecretState();
+            await ctx.eventSource?.emit?.(ctx.eventTypes?.SECRET_DELETED, key);
+        }
+        return done;
     },
 
     async rename(key, id, label) {

@@ -10,6 +10,7 @@ export function defaultSettings() {
         bindings: {},
         // "<secretKey>:<secretId>" refs already looked at during import, so deleted profiles are not re-imported
         seenRefs: [],
+        removedRefs: [],
         options: {
             theme: 'light',
             pill: true,
@@ -66,12 +67,28 @@ export function migrate(raw, extIds = []) {
         profiles,
         bindings: raw.bindings && typeof raw.bindings === 'object' ? { ...raw.bindings } : {},
         seenRefs: Array.isArray(raw.seenRefs) ? raw.seenRefs.filter(x => typeof x === 'string') : [],
+        removedRefs: stringRefs(raw.removedRefs),
         options,
     };
 }
 
 const str = v => (typeof v === 'string' ? v.trim() : '');
 const num = (v, d) => (Number.isFinite(v) ? v : d);
+const stringRefs = values => Array.isArray(values) ? [...new Set(values.filter(v => typeof v === 'string' && v))] : [];
+
+export function extImportRef(source, key, url) {
+    return 'ext:' + source + ':' + hashKey(key + '\n' + urlIdentity(url));
+}
+
+export function profileImportRefs(p) {
+    const refs = new Set(p.importRefs);
+    if (p.stRef?.id) refs.add(p.stRef.key + ':' + p.stRef.id);
+    if (p.proxyRef?.hash) refs.add('proxy:' + p.proxyRef.hash);
+    if (p.key) {
+        for (const r of p.extRefs) refs.add(extImportRef(r.source, p.key, r.urlSeen ?? p.url));
+    }
+    return refs;
+}
 
 export function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -86,6 +103,7 @@ export function createProfile(p = {}) {
         key: str(p.key),
         // masked value shown by SillyTavern when the raw key cannot be read
         keyHint: str(p.keyHint),
+        importRefs: stringRefs(p.importRefs),
         model: str(p.model),
         tags: Array.isArray(p.tags) ? [...new Set(p.tags.map(str).filter(Boolean))] : [],
         note: typeof p.note === 'string' ? p.note : '',

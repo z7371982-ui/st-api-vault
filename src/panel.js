@@ -11,7 +11,7 @@ import { updateState, onUpdateState, checkForUpdates, runUpdate, showChangelog, 
 import {
     esc, maskKey, hostOf, colorFor, initials, searchProfiles, sortProfiles, SORTS, normalizeSort, moveInOrder,
     parseTags, parseCredentialText, findDuplicate, normalizeUrl, bindingStatus, extRefId,
-    tagList, tagBarHtml, splitFavorites, hostQueues,
+    tagList, tagBarHtml, splitFavorites, hostQueues, urlIdentity,
 } from './vault.js';
 
 const TITLE = '通用钥匙API管理器';
@@ -32,6 +32,9 @@ let root = null;
 let view = 'list'; // list | edit | import | settings
 let editId = null;
 let query = '';
+const PAGE_SIZE = 40;
+let listPage = 0;
+let reviewCopies = false;
 let tag = '';
 let importState = null; // { loading, canView, items, picked:Set }
 // Editor-only state for the connection test, kept outside the form so re-renders do not lose it.
@@ -46,6 +49,8 @@ let armTimer = 0;
 // Batch mode in the list: cards get a checkbox, a bar at the bottom deletes the checked ones.
 let selecting = false;
 const selected = new Set(); // profile ids
+// Duplicate-key cleanup in ST, kept outside the button so a re-render mid-run keeps showing progress.
+let dedupeJob = null; // { done, total }
 
 // ---------- helpers ----------
 
@@ -117,8 +122,33 @@ function activeTag() {
 /** Profiles the list shows right now: search and tag filter applied. */
 function shownProfiles() {
     const t = activeTag();
-    const list = sortProfiles(searchProfiles(store.profiles, query), store.options.sort, store.options.order);
+    let profiles = store.profiles;
+    if (reviewCopies) {
+        const groups = new Map();
+        for (const p of profiles) {
+            if (!p.key && !(p.stRef && p.keyHint)) continue;
+            const id = JSON.stringify([p.stRef?.key || '', urlIdentity(p.url), p.key ? 'raw' : 'mask', p.key || p.keyHint]);
+            if (!groups.has(id)) groups.set(id, []);
+            groups.get(id).push(p);
+        }
+        profiles = [...groups.values()].filter(g => g.length > 1).flat();
+    }
+    const found = searchProfiles(profiles, query);
+    const list = reviewCopies ? found : sortProfiles(found, store.options.sort, store.options.order);
     return t ? list.filter(p => p.tags.includes(t)) : list;
+}
+
+function lastPage(n) {
+    return Math.max(0, Math.ceil(n / PAGE_SIZE) - 1);
+}
+
+function pageControls(page, n) {
+    const last = lastPage(n);
+    if (!last) return '';
+    return `<nav class="avm-pages" aria-label="列表翻页">
+        <button type="button" class="avm-btn" data-act="prev-page" ${page ? '' : 'disabled'}>上一页</button>
+        <span>${page + 1} / ${last + 1}</span>
+        <button type="button" class="avm-btn" data-act="next-page" ${page < last ? '' : 'disabled'}>下一页</button></nav>`;
 }
 
 // ---------- rendering ----------
@@ -132,8 +162,7 @@ function fillTip() {
     </div>`;
 }
 
-function card(p) {
-    const bindings = store.bindingsFor(p.id);
+function card(p, bindings) {
     const out = store.isOutOfSync(p);
     const synced = p.stRef && !out;
     const keyText = maskKey(p.key) || (p.keyHint ? `${p.keyHint}` : '');
@@ -159,8 +188,9 @@ function card(p) {
             <div class="avm-card-title">
                 <div class="avm-card-name">${esc(p.name)}</div>
                 <div class="avm-card-host">${esc(hostOf(p.url) || '未填地址')}${p.model ? ` · ${esc(p.model)}` : ''}</div>
+                ${reviewCopies ? `<small>记录 ID · ${esc(p.stRef?.id || p.id)}</small>` : ''}
             </div>
-            ${selecting ? '' : `${normalizeSort(store.options.sort) === 'custom' ? `<span class="avm-move">
+            ${selecting ? '' : `${!reviewCopies && normalizeSort(store.options.sort) === 'custom' ? `<span class="avm-move">
                 <button type="button" class="avm-icon-btn" data-act="move-up" title="上移" aria-label="上移 ${esc(p.name)}"><i class="fa-solid fa-chevron-up"></i></button>
                 <button type="button" class="avm-icon-btn" data-act="move-down" title="下移" aria-label="下移 ${esc(p.name)}"><i class="fa-solid fa-chevron-down"></i></button>
             </span>` : ''}
@@ -218,6 +248,10 @@ function testSection(p) {
 
 function listView() {
     const list = shownProfiles();
+    listPage = Math.min(listPage, lastPage(list.length));
+    const page = list.slice(listPage * PAGE_SIZE, (listPage + 1) * PAGE_SIZE);
+    const pageBindings = new Map(page.map(p => [p.id, []]));
+    for (const entry of Object.entries(store.settings.bindings)) pageBindings.get(entry[1].profileId)?.push(entry);
 
     const empty = store.profiles.length
         ? '<div class="avm-empty"><i class="fa-solid fa-magnifying-glass"></i><p>没有匹配的配置</p></div>'
@@ -245,7 +279,7 @@ function listView() {
             <span class="avm-list-count">${list.length === store.profiles.length ? `共 ${list.length} 个` : `${list.length} / ${store.profiles.length} 个`}</span>
             <label class="avm-chip-control" title="列表排序">
                 <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
-                <select data-role="sort" aria-label="列表排序">
+                <select data-role="sort" aria-label="列表排序" ${reviewCopies ? 'disabled' : ''}>
                     ${SORTS.map(([v, label]) => `<option value="${v}" ${normalizeSort(store.options.sort) === v ? 'selected' : ''}>${label}</option>`).join('')}
                 </select>
             </label>
@@ -253,11 +287,14 @@ function listView() {
                 <i class="fa-solid fa-${selecting ? 'xmark' : 'list-check'}" aria-hidden="true"></i><span>${selecting ? '完成' : '批量删除'}</span>
             </button>
         </div>
-        ${normalizeSort(store.options.sort) === 'custom' && !selecting ? '<span class="avm-hint avm-listbar-hint">用卡片右上的 ↑ ↓ 调整顺序，钥匙按钮弹出的列表也按这个顺序</span>' : ''}
+        ${!reviewCopies && normalizeSort(store.options.sort) === 'custom' && !selecting ? '<span class="avm-hint avm-listbar-hint">用卡片右上的 ↑ ↓ 调整顺序，钥匙按钮弹出的列表也按这个顺序</span>' : ''}
         ${selecting ? '<span class="avm-hint avm-listbar-hint">点卡片勾选要删除的配置，底部确认删除</span>' : ''}` : ''}
         ${store.options.tagBar ? tagBarHtml(allTags(), activeTag(), store.profiles.length) : ''}
-        <div class="avm-list">${list.length ? list.map(p => card(p)).join('') : empty}</div>
-        ${selecting && store.profiles.length ? batchFoot(list) : store.profiles.length ? `<div class="avm-list-foot">
+        ${store.profiles.length > 1 || reviewCopies ? `<button class="avm-link-btn" data-act="review-copies">${reviewCopies ? '退出疑似重复预览' : '查看疑似重复配置'}</button>` : ''}
+        ${reviewCopies ? '<p class="avm-hint">相同来源和地址的重复候选已排在一起。可逐项核对模型、绑定和密钥记录后移除。</p>' : ''}
+        <div class="avm-list">${page.length ? page.map(p => card(p, pageBindings.get(p.id))).join('') : empty}</div>
+        ${pageControls(listPage, list.length)}
+        ${selecting && store.profiles.length ? batchFoot(list) : store.profiles.length && !reviewCopies ? `<div class="avm-list-foot">
             <button type="button" class="avm-link-btn is-danger" data-act="clear-all"><i class="fa-solid fa-trash-can"></i>清空全部 ${store.profiles.length} 个配置</button>
         </div>` : ''}`;
 }
@@ -355,28 +392,40 @@ function importView() {
     if (!s || s.loading) return `${head}<div class="avm-empty"><i class="fa-solid fa-spinner fa-spin"></i><p>正在读取…</p></div>`;
     if (!s.items.length) return `${head}<div class="avm-empty"><i class="fa-solid fa-inbox"></i><p>酒馆和其他扩展里都没找到已保存的密钥</p></div>`;
 
-    const status = it => {
-        if (!it.existing) return '<span class="avm-badge is-ok">新</span>';
-        return `<span class="avm-badge">已有：${esc(it.existing.name)}</span>`;
+    const group = s.openGroup === null ? null : s.groups.get(s.openGroup);
+    const entries = group || s.topRows;
+    const page = group ? s.memberPage : s.groupPage;
+    const indices = entries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    const row = i => {
+        const it = s.items[i];
+        const tail = maskKey(it.key) || it.keyHint || '—';
+        if (!group && it.choiceGroup != null) {
+            const members = s.groups.get(it.choiceGroup);
+            return `<button type="button" class="avm-btn" data-act="open-group" data-group="${it.choiceGroup}">
+                ${esc(it.provider)} · ${esc(tail)} · 疑似重复 ${members.length} 条 · 展开</button>`;
+        }
+        const status = it.existing ? '已有：' + it.existing.name : it.removed ? '已移除' : '新';
+        const label = group ? [it.label, it.stRef.id].filter(Boolean).join(' · ') : '';
+        return `<label class="avm-import-row">
+            <input type="checkbox" data-pick="${i}" ${s.picked.has(i) ? 'checked' : ''}>
+            <span class="avm-avatar" style="--c:${colorFor(it.name)}">${esc(initials(it.name))}</span>
+            <span class="avm-row-text">
+                <span class="avm-row-name">${esc(it.name)}${it.active ? ' · 酒馆在用' : ''}</span>
+                <span class="avm-row-sub">${esc(it.source)} · ${esc(tail)}${it.copies > 1 ? ' · 相同密钥 ' + it.copies + ' 份' : ''}</span>
+                ${label ? `<small>${esc(label)}</small>` : ''}
+            </span><span class="avm-badge">${esc(status)}</span></label>`;
     };
     return `${head}
         ${s.canView ? '' : `<div class="avm-note"><i class="fa-solid fa-circle-info"></i><div>
             酒馆没开 <code>allowKeysExposure</code>，酒馆里的密钥只能读到掩码。导入后可以一键切换酒馆正在用的密钥，
             但填进其他插件需要原文：在 <code>config.yaml</code> 设为 <code>true</code> 并重启，或在配置里手动补上密钥。
         </div></div>`}
-        <div class="avm-import-list">
-            ${s.items.map((it, i) => `<label class="avm-import-row">
-                <input type="checkbox" data-pick="${i}" ${s.picked.has(i) ? 'checked' : ''}>
-                <span class="avm-avatar" style="--c:${colorFor(it.name)}">${esc(initials(it.name))}</span>
-                <span class="avm-row-text">
-                    <span class="avm-row-name">${esc(it.name)}${it.active ? ' <span class="avm-badge is-accent">酒馆在用</span>' : ''}</span>
-                    <span class="avm-row-sub">${esc(it.source)}${it.provider && it.provider !== it.source ? ` · ${esc(it.provider)}` : ''} · ${esc(maskKey(it.key) || it.keyHint || '—')}</span>
-                </span>
-                ${status(it)}
-            </label>`).join('')}
-        </div>
+        <p class="avm-hint">扫描到 ${s.total} 条 · 折叠后 ${s.topRows.length} 组 · 已选 ${s.picked.size} 项</p>
+        ${group ? '<button class="avm-link-btn" data-act="close-group">返回全部分组</button><p class="avm-hint">尾号相同，请按标签或记录 ID 逐项选择。</p>' : ''}
+        <div class="avm-import-list">${indices.map(row).join('')}</div>
+        ${pageControls(page, entries.length)}
         <div class="avm-form-actions">
-            <button type="button" class="avm-btn" data-act="pick-all">${s.picked.size === s.items.length ? '全不选' : '全选'}</button>
+            <button type="button" class="avm-btn" data-act="pick-all" ${!s.picked.size && !s.defaults.length ? 'disabled' : ''}>${s.picked.size ? '全不选' : '选中新项'}</button>
             <span class="avm-hint avm-hide-sm">已有的配置只会补全缺的信息，不会重复创建</span>
             <span class="avm-flex"></span>
             <button type="button" class="avm-btn is-primary" data-act="do-import" ${s.picked.size ? '' : 'disabled'}>
@@ -415,13 +464,15 @@ function settingsView() {
             </label>
             ${row('pill', '输入框旁的钥匙按钮', '点进 API 地址或密钥框时，在框边上显示一个小钥匙，点开就能选配置')}
             ${row('autoFillBound', '自动填入已绑定的配置', '框是空的、之前在这里用过某个配置时，一点进去就自动填好')}
-            ${row('capture', '发现新密钥时提示保存', '在插件里手动粘贴了管理器没有的密钥，弹个提示，点一下就存起来')}
-            ${row('autoImport', '自动导入新密钥', '默认关闭，用列表上的「扫描」自己挑。打开后，启动时和在酒馆里保存新密钥后会自动导入（删掉的不会再导回来）')}
+            ${row('capture', '发现新密钥时提示保存', '酒馆新增密钥或反向代理预设、插件保存可识别的 API 配置、手动填写新密钥时，弹窗询问是否新增。开启自动导入会跳过弹窗。')}
+            ${row('autoImport', '自动导入新密钥', '开启后直接收录可识别的新配置，跳过保存弹窗。启动时也会检查已有配置，曾从管理器删除的记录会跳过。')}
             ${row('autoSync', '改动自动同步回去', '在管理器里改了密钥、地址或名称，保存时同步更新酒馆里对应的密钥和用到它的扩展设置')}
             ${row('autoConnect', '启动后自动连接 API', '重新进入酒馆后，如果没有连上，自动按一次上次成功连接时的「连接」按钮（只在接口和来源没变时，最多试 3 次）')}
             <div class="avm-switch-row">
                 <span><b>清理酒馆里重复的密钥</b><small>酒馆「管理密钥」列表里同一个密钥存了好几份时，每组只留一份（正在用的那份优先），其余删除。需要 config.yaml 开启 allowKeysExposure 才能比对</small></span>
-                <button type="button" class="avm-btn" data-act="dedupe-st"><i class="fa-solid fa-broom"></i>检查</button>
+                <button type="button" class="avm-btn" data-act="dedupe-st" ${dedupeJob ? 'disabled' : ''}>${dedupeJob
+                    ? `<i class="fa-solid fa-spinner fa-spin"></i>${dedupeJob.done} / ${dedupeJob.total}`
+                    : '<i class="fa-solid fa-broom"></i>检查'}</button>
             </div>
             ${row('tagBar', '标签筛选栏', '在列表和填写弹窗的搜索框下面显示一排标签，点一下只看带这个标签的配置。标签在编辑配置的「标签」框里填，多个用逗号隔开')}
             <label class="avm-switch-row">
@@ -506,13 +557,33 @@ function go(next, id = null) {
 }
 
 async function startImport() {
-    importState = { loading: true };
+    const request = { loading: true };
+    importState = request;
     go('import');
     try {
         const { canView, items } = await collectCandidates();
-        const picked = new Set(items.map((it, i) => (it.existing ? -1 : i)).filter(i => i >= 0));
-        importState = { loading: false, canView, items, picked };
+        if (request !== importState) return;
+        const groups = new Map();
+        const topRows = [];
+        const defaults = [];
+        let total = 0;
+        items.forEach((it, i) => {
+            total += it.copies || 1;
+            if (it.choiceGroup == null) {
+                topRows.push(i);
+                if (!it.existing && !it.removed) defaults.push(i);
+                return;
+            }
+            if (!groups.has(it.choiceGroup)) {
+                groups.set(it.choiceGroup, []);
+                topRows.push(i);
+            }
+            groups.get(it.choiceGroup).push(i);
+        });
+        importState = { canView, items, total, topRows, groups, defaults, picked: new Set(defaults),
+            groupPage: 0, memberPage: 0, openGroup: null };
     } catch (err) {
+        if (request !== importState) return;
         console.error('[API Vault] import scan failed', err);
         importState = { loading: false, canView: false, items: [], picked: new Set() };
         toastr.error('读取酒馆密钥失败', TITLE);
@@ -951,6 +1022,7 @@ async function onClick(e) {
     }
     const tagBtn = e.target.closest('[data-tag]');
     if (tagBtn) {
+        listPage = 0;
         tag = tagBtn.dataset.tag;
         return render();
     }
@@ -981,6 +1053,29 @@ async function onClick(e) {
     const form = root.querySelector('[data-role="editor"]');
 
     switch (el.dataset.act) {
+        case 'prev-page':
+        case 'next-page': {
+            const step = el.dataset.act === 'next-page' ? 1 : -1;
+            if (view === 'list') listPage += step;
+            else if (importState.openGroup === null) importState.groupPage += step;
+            else importState.memberPage += step;
+            render();
+            root.querySelector('.avm-body').scrollTop = 0;
+            return;
+        }
+        case 'open-group':
+        case 'close-group':
+            importState.openGroup = el.dataset.act === 'open-group' ? Number(el.dataset.group) : null;
+            importState.memberPage = 0;
+            render();
+            root.querySelector('.avm-body').scrollTop = 0;
+            return;
+        case 'review-copies':
+            reviewCopies = !reviewCopies;
+            listPage = 0;
+            selected.clear();
+            selecting = false;
+            return render();
         case 'close': return closePanel();
         case 'test-all': return runTestAll();
         case 'check-update': {
@@ -1136,7 +1231,13 @@ async function onClick(e) {
             return;
         }
         case 'dedupe-st': {
+            if (dedupeJob) return;
+            dedupeJob = { done: 0, total: 0 };
             el.disabled = true;
+            const showProgress = () => {
+                const b = root.querySelector('[data-act="dedupe-st"]');
+                if (b) b.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i>${dedupeJob.done} / ${dedupeJob.total}`;
+            };
             try {
                 const { canView, groups } = await st.duplicates();
                 if (!canView) {
@@ -1155,17 +1256,23 @@ async function onClick(e) {
                 if (!ok) return;
                 // ST's Connection Manager profiles point at one copy by id; repoint them before deleting.
                 const cmProfiles = ctx.extensionSettings?.connectionManager?.profiles || [];
+                let done = 0;
+                dedupeJob.total = n;
+                showProgress();
                 for (const g of groups) {
-                    for (const s of g.drop) {
-                        // A profile pointing at a removed copy follows the one that stays.
-                        for (const p of store.profiles) {
-                            if (p.stRef?.key === g.key && p.stRef.id === s.id) p.stRef = { key: g.key, id: g.keep.id };
-                        }
-                        for (const cp of cmProfiles) {
-                            if (cp?.['secret-id'] === s.id) cp['secret-id'] = g.keep.id;
-                        }
-                        await st.remove(g.key, s.id);
+                    const ids = new Set(g.drop.map(s => s.id));
+                    // A profile pointing at a removed copy follows the one that stays.
+                    for (const p of store.profiles) {
+                        if (p.stRef?.key === g.key && ids.has(p.stRef.id)) p.stRef = { key: g.key, id: g.keep.id };
                     }
+                    for (const cp of cmProfiles) {
+                        if (ids.has(cp?.['secret-id'])) cp['secret-id'] = g.keep.id;
+                    }
+                    await st.removeMany(g.key, [...ids], d => {
+                        dedupeJob.done = done + d;
+                        showProgress();
+                    });
+                    done += ids.size;
                 }
                 ctx.saveSettingsDebounced();
                 store.save();
@@ -1174,7 +1281,8 @@ async function onClick(e) {
             } catch (err) {
                 toastr.error(esc(err.message || String(err)), TITLE);
             } finally {
-                el.disabled = false;
+                dedupeJob = null;
+                if (view === 'settings') render();
             }
             return;
         }
@@ -1222,7 +1330,7 @@ async function onClick(e) {
         case 'pick-all': {
             const s = importState;
             if (!s?.items) return;
-            s.picked = s.picked.size === s.items.length ? new Set() : new Set(s.items.map((_, i) => i));
+            s.picked = s.picked.size ? new Set() : new Set(s.defaults);
             return render();
         }
         case 'do-import': {
@@ -1242,6 +1350,7 @@ function onInput(e) {
         root.querySelector('[data-role="fab-size-preview"]').style.setProperty('--avm-fab-size', `${size}px`);
     } else if (e.target.dataset.role === 'query') {
         query = e.target.value;
+        listPage = 0;
         if (!e.isComposing && !queryComposing) render();
     } else if (view === 'edit' && ['url', 'key'].includes(e.target.name)) {
         invalidateEditorTest();
@@ -1268,6 +1377,7 @@ function onChange(e) {
         return render();
     }
     if (t.dataset.role === 'sort') {
+        listPage = 0;
         store.setOption('sort', normalizeSort(t.value));
         return;
     }
@@ -1297,25 +1407,57 @@ function onChange(e) {
 let fab = null;
 let panelBackdrop = null;
 let panelDialog = null;
-let openedAt = 0;
+let backdropPressed = false;
+let pageLayer = false;
+let layerCheck = 0;
+
+// Some Android themes leave a modal open and paint only its backdrop.
+function verifyMobileLayer() {
+    cancelAnimationFrame(layerCheck);
+    layerCheck = requestAnimationFrame(() => {
+        if (!isCompact() || !root.classList.contains('is-open') || document.hidden) return;
+        const close = root.querySelector('[data-act="close"]');
+        const r = close.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        const visible = el => Number(getComputedStyle(el).opacity) > 0 && getComputedStyle(el).visibility === 'visible';
+        if (r.width && r.height && root.querySelector('.avm-body').clientHeight > 0 && hit && close.contains(hit) && visible(root)
+            && (!panelDialog?.open || visible(panelDialog))) return;
+        if (!pageLayer) {
+            usePageLayer();
+            verifyMobileLayer();
+        } else {
+            closePanel();
+            globalThis.toastr?.warning('当前页面遮住了管理器，请关闭其他弹窗后重试。', TITLE);
+        }
+    });
+}
 
 function updatePanelLayer() {
     if (!isCompact() || !root.classList.contains('is-open')) {
+        cancelAnimationFrame(layerCheck);
+        pageLayer = false;
+        root.classList.remove('avm-page-sheet');
         panelBackdrop?.remove();
         if (panelDialog?.open) panelDialog.close();
         if (root.parentElement !== document.body) document.body.append(root);
         return;
     }
+    if (pageLayer) {
+        usePageLayer();
+        return;
+    }
     if (!panelBackdrop) {
         panelBackdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop avm-panel-backdrop' });
+        const downEvent = window.PointerEvent ? 'pointerdown' : 'touchstart';
+        panelBackdrop.addEventListener(downEvent, () => { backdropPressed = true; }, { passive: true });
+        if (!window.PointerEvent) panelBackdrop.addEventListener('mousedown', () => { backdropPressed = true; });
+        panelBackdrop.addEventListener(window.PointerEvent ? 'pointercancel' : 'touchcancel', () => { backdropPressed = false; });
         panelBackdrop.addEventListener('click', e => {
-            // The tap that opened the panel (floating key, wand menu) is followed by a click the browser
-            // synthesizes ~300ms later at the same spot, where the backdrop now is. Only a later tap closes it.
-            if (Date.now() - openedAt < 600) {
-                e.preventDefault();
-                e.stopPropagation();
-                return;
-            }
+            // The opening tap can land here more than a second after its pointerup on a slow phone.
+            e.preventDefault();
+            e.stopPropagation();
+            if (!backdropPressed) return;
+            backdropPressed = false;
             closePanel();
         });
     }
@@ -1337,15 +1479,18 @@ function updatePanelLayer() {
         if (!panelDialog.open) {
             try {
                 panelDialog.showModal();
+                verifyMobileLayer();
             } catch (err) {
                 // Some WebViews refuse (another modal is open, the dialog is mid-transition). The panel and its
                 // backdrop are inside the dialog, so a closed dialog would show neither; fall back to body.
                 console.warn('[API Vault] showModal failed, using the page layer', err);
                 usePageLayer();
+                verifyMobileLayer();
             }
         }
     } else {
         usePageLayer();
+        verifyMobileLayer();
     }
 }
 
@@ -1356,7 +1501,10 @@ function updatePanelLayer() {
  * the sheet and backdrop are moved by how far that box's bottom is from the screen's bottom.
  */
 function usePageLayer() {
-    document.body.append(panelBackdrop, root);
+    pageLayer = true;
+    if (panelDialog?.open) panelDialog.close();
+    root.classList.add('avm-page-sheet');
+    if (root.parentElement !== document.body || !panelBackdrop.isConnected) document.body.append(panelBackdrop, root);
     const probe = Object.assign(document.createElement('div'), { className: 'avm-root' });
     probe.style.cssText = 'position:fixed;left:0;top:0;bottom:0;width:0;visibility:hidden;pointer-events:none';
     document.body.append(probe);
@@ -1392,7 +1540,7 @@ function updateFab() {
 }
 
 export function openPanel() {
-    if (!root.classList.contains('is-open')) openedAt = Date.now();
+    backdropPressed = false;
     // The viewport may have changed while the app was in the background; size the sheet from fresh values.
     syncViewport();
     root.classList.add('is-open');
@@ -1419,7 +1567,8 @@ export function togglePanel() {
 export function initPanel(context) {
     ctx = context;
     applyTheme();
-    root = document.createElement('aside');
+    root = document.createElement('div');
+    root.setAttribute('role', 'region');
     root.className = 'avm-root avm-panel';
     root.setAttribute('aria-label', TITLE);
     root.setAttribute('aria-hidden', 'true');

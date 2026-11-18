@@ -121,11 +121,16 @@ export function scanExtensionSettings(settings, { maxDepth = 6 } = {}) {
         unique.set(id, entry);
     };
     const pairId = c => `${c.key}\n${urlIdentity(c.url)}`;
-    for (const { ref, ...c } of out) if (c.url) add(pairId(c), c, ref);
+    const firstWithUrl = new Map();
+    for (const { ref, ...c } of out) {
+        if (!c.url) continue;
+        const id = pairId(c);
+        if (!firstWithUrl.has(c.key)) firstWithUrl.set(c.key, id);
+        add(id, c, ref);
+    }
     for (const { ref, ...c } of out) {
         if (c.url) continue;
-        const withUrl = [...unique.keys()].find(id => id.startsWith(`${c.key}\n`));
-        add(withUrl || pairId(c), c, ref);
+        add(firstWithUrl.get(c.key) || pairId(c), c, ref);
     }
     return [...unique.values()];
 }

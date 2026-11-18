@@ -2,7 +2,8 @@
 import { store } from './src/store.js';
 import { st } from './src/st.js';
 import { proxy } from './src/proxy.js';
-import { initSync, autoImport, scheduleImport, scheduleReconcile } from './src/sync.js';
+import { initSync, scheduleSync, primeCapture, saveCaptured } from './src/sync.js';
+import { initCapture } from './src/capture.js';
 import { initProbe } from './src/probe.js';
 import { initFill } from './src/fill.js';
 import { initPanel, openPanel, togglePanel } from './src/panel.js';
@@ -67,6 +68,8 @@ async function init() {
     st.init(ctx);
     proxy.init(ctx);
     initSync(ctx);
+    initCapture(saveCaptured);
+    primeCapture();
     initProbe(ctx);
     initPanel(ctx);
     initFill({ openPanel });
@@ -82,25 +85,14 @@ async function init() {
     const on = (name, fn) => eventTypes?.[name] && eventSource.on(eventTypes[name], fn);
     // New key saved in ST: import it. Deleted / switched / renamed in ST, or an extension
     // rewrote its settings: follow the change on linked profiles.
-    on('SECRET_WRITTEN', () => {
-        if (store.options.autoImport) scheduleImport();
-        scheduleReconcile();
-    });
-    on('SECRET_DELETED', () => scheduleReconcile());
-    on('SECRET_ROTATED', () => scheduleReconcile());
-    on('SECRET_EDITED', () => scheduleReconcile());
-    on('SETTINGS_UPDATED', () => {
-        scheduleReconcile(1500);
-        if (store.options.autoImport) scheduleImport();
-    });
+    const secretEvents = ['SECRET_WRITTEN', 'SECRET_DELETED', 'SECRET_ROTATED', 'SECRET_EDITED'];
+    for (const name of secretEvents) on(name, () => scheduleSync({ secrets: true, discover: name === 'SECRET_WRITTEN' }));
+    // Older builds may only report secret edits through the general settings event.
+    const legacyEvents = secretEvents.some(name => !eventTypes?.[name]);
+    on('SETTINGS_UPDATED', () => scheduleSync({ secrets: legacyEvents, discover: true, delay: 1500 }));
 
     // Give ST a moment to finish its own secret / settings loading.
-    setTimeout(() => {
-        const first = store.options.autoImport ? autoImport({ silent: false }) : Promise.resolve();
-        first
-            .catch(err => console.warn('[API Vault] auto import failed', err))
-            .finally(() => scheduleReconcile(0));
-    }, 2500);
+    scheduleSync({ secrets: true, discover: true, delay: 2500 });
 }
 
 jQuery(() => {
