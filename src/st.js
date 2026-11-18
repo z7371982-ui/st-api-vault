@@ -220,18 +220,43 @@ export const st = {
      * refreshes ST once at the end. `onProgress(done, total)` reports along the way.
      */
     async removeMany(key, ids, onProgress = () => {}) {
+        // ST rewrites the whole secrets file on every delete, so one-by-one waits on thousands of round trips
+        // (3000 copies took over 8 minutes). Its handlers read, edit and write the file synchronously, so a few
+        // requests in flight at once are still applied one after another and cannot overwrite each other.
         let done = 0;
-        for (const id of ids) {
-            await post('/api/secrets/delete', { key, id });
-            done++;
-            if (done % 50 === 0 || done === ids.length) onProgress(done, ids.length);
-        }
+        let next = 0;
+        const failed = [];
+        // A single write can fail for a moment (the file briefly locked by a scanner or backup on Windows).
+        // Retry it a few times; one bad request must not abandon the thousands still queued.
+        const removeOne = async id => {
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    return await post('/api/secrets/delete', { key, id });
+                } catch (err) {
+                    if (attempt >= 3) throw err;
+                    await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+                }
+            }
+        };
+        const worker = async () => {
+            while (next < ids.length) {
+                const id = ids[next++];
+                try {
+                    await removeOne(id);
+                } catch {
+                    failed.push(id);
+                }
+                done++;
+                if (done % 25 === 0 || done === ids.length) onProgress(done, ids.length);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker));
         const m = await loadModule();
         if (m) {
             await m.readSecretState();
             await ctx.eventSource?.emit?.(ctx.eventTypes?.SECRET_DELETED, key);
         }
-        return done;
+        return { done: done - failed.length, failed };
     },
 
     async rename(key, id, label) {

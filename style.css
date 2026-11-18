@@ -153,6 +153,41 @@ dialog.avm-capture-layer[open] {
 .avm-panel-layer > .avm-panel,
 .avm-panel-layer > .avm-panel-backdrop { pointer-events: auto; }
 
+/* Themes (美化) often style every <dialog> or <aside>: centred boxes, fade-out animations, opacity 0.
+   On this layer that hid the panel while its dark backdrop stayed. verifyMobileLayer() moves the panel out
+   when it notices; pinning the open layer here keeps it from being hidden in the first place, including
+   by animations, which finish after that check has already passed. */
+dialog.avm-root.avm-panel-layer[open] {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+    filter: none !important;
+    animation: none !important;
+    overflow: visible !important;
+}
+
+aside.avm-root.avm-panel.is-open {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    animation: none !important;
+}
+
 .avm-panel {
     position: fixed;
     top: 0;

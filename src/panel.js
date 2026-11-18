@@ -1257,6 +1257,7 @@ async function onClick(e) {
                 // ST's Connection Manager profiles point at one copy by id; repoint them before deleting.
                 const cmProfiles = ctx.extensionSettings?.connectionManager?.profiles || [];
                 let done = 0;
+                let failed = 0;
                 dedupeJob.total = n;
                 showProgress();
                 for (const g of groups) {
@@ -1268,16 +1269,18 @@ async function onClick(e) {
                     for (const cp of cmProfiles) {
                         if (ids.has(cp?.['secret-id'])) cp['secret-id'] = g.keep.id;
                     }
-                    await st.removeMany(g.key, [...ids], d => {
+                    const r = await st.removeMany(g.key, [...ids], d => {
                         dedupeJob.done = done + d;
                         showProgress();
                     });
                     done += ids.size;
+                    failed += r.failed.length;
                 }
                 ctx.saveSettingsDebounced();
                 store.save();
                 await reconcile();
-                toastr.success(`已删除 ${n} 个重复的密钥`, TITLE, { timeOut: 2500 });
+                if (failed) toastr.warning(`已删除 ${n - failed} 个重复的密钥，${failed} 个没删掉，可以再点一次「检查」`, TITLE, { timeOut: 6000 });
+                else toastr.success(`已删除 ${n} 个重复的密钥`, TITLE, { timeOut: 2500 });
             } catch (err) {
                 toastr.error(esc(err.message || String(err)), TITLE);
             } finally {
