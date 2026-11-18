@@ -117,7 +117,10 @@ export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
         if (e.button > 0 || start || e.isPrimary === false) return;
         const rect = btn.getBoundingClientRect();
         start = { id: e.pointerId, x: e.clientX, y: e.clientY,
-            left: rect.left, top: rect.top, side };
+            left: rect.left, top: rect.top, side,
+            // A thumb drifts several px during a plain tap; 6px turned many taps into tiny drags that did nothing.
+            // 10px is just above Android's own touch slop (8dp).
+            slop: e.pointerType === 'mouse' ? 6 : 10 };
         // Freeze the visible location, including a snap animation still in flight.
         btn.classList.add('is-dragging');
         btn.style.left = `${rect.left}px`;
@@ -131,7 +134,7 @@ export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
         if (!start || e.pointerId !== start.id) return;
         const dx = e.clientX - start.x;
         const dy = e.clientY - start.y;
-        if (!moved && Math.hypot(dx, dy) < 6) return;
+        if (!moved && Math.hypot(dx, dy) < start.slop) return;
         moved = true;
         btn.classList.add('is-dragging');
         if (collapsed && (start.side === 0 ? dx > 12 : dx < -12)) {
@@ -176,6 +179,12 @@ export function createFab({ onTap, getPos, setPos, getSize = () => 48 }) {
         suppressClick = true;
         activate();
     });
+    // After a touch, Android sends mousedown / mouseup / click ~300ms later at the same spot. The panel
+    // has opened there by then, so that click hit its backdrop (closing it again: a quick flash) or a
+    // button inside it. Cancelling touchend stops the browser from sending them at all.
+    btn.addEventListener('touchend', e => {
+        if (Date.now() - tappedAt < 100 && e.cancelable) e.preventDefault();
+    }, { passive: false });
     btn.addEventListener('pointercancel', e => end(e, true));
     btn.addEventListener('lostpointercapture', e => end(e, true));
     btn.addEventListener('click', e => {

@@ -1226,6 +1226,7 @@ function onChange(e) {
 let fab = null;
 let panelBackdrop = null;
 let panelDialog = null;
+let openedAt = 0;
 
 function updatePanelLayer() {
     if (!isCompact() || !root.classList.contains('is-open')) {
@@ -1236,7 +1237,16 @@ function updatePanelLayer() {
     }
     if (!panelBackdrop) {
         panelBackdrop = Object.assign(document.createElement('div'), { className: 'avm-root avm-backdrop avm-panel-backdrop' });
-        panelBackdrop.addEventListener('click', () => closePanel());
+        panelBackdrop.addEventListener('click', e => {
+            // The tap that opened the panel (floating key, wand menu) is followed by a click the browser
+            // synthesizes ~300ms later at the same spot, where the backdrop now is. Only a later tap closes it.
+            if (Date.now() - openedAt < 600) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            closePanel();
+        });
     }
     // A modal dialog uses the browser's top layer, above host overlays regardless of z-index.
     if (!panelDialog && typeof HTMLDialogElement !== 'undefined' && typeof HTMLDialogElement.prototype.showModal === 'function') {
@@ -1311,6 +1321,7 @@ function updateFab() {
 }
 
 export function openPanel() {
+    if (!root.classList.contains('is-open')) openedAt = Date.now();
     // The viewport may have changed while the app was in the background; size the sheet from fresh values.
     syncViewport();
     root.classList.add('is-open');
