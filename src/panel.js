@@ -43,6 +43,9 @@ let fabRenderPending = false;
 const testing = new Set(); // profile ids with a card-level test running
 let armedDelete = null; // profile id whose delete button is waiting for the confirming second tap
 let armTimer = 0;
+// Batch mode in the list: cards get a checkbox, a bar at the bottom deletes the checked ones.
+let selecting = false;
+const selected = new Set(); // profile ids
 
 // ---------- helpers ----------
 
@@ -148,21 +151,23 @@ function card(p) {
         bindings.length ? `<span class="avm-badge" title="${esc(bindings.map(([, b]) => b.place?.plugin || b.scope || b.label).filter(Boolean).join('、'))}"><i class="fa-solid fa-thumbtack"></i>${bindings.length} 处</span>` : '',
     ].join('');
 
-    return `<article class="avm-card" data-id="${esc(p.id)}">
+    const picked = selecting && selected.has(p.id);
+    return `<article class="avm-card${selecting ? ' is-selecting' : ''}${picked ? ' is-picked' : ''}" data-id="${esc(p.id)}">
         <div class="avm-card-head">
+            ${selecting ? `<input type="checkbox" class="avm-card-check" data-role="select" ${picked ? 'checked' : ''} aria-label="选择 ${esc(p.name)}">` : ''}
             <span class="avm-avatar" style="--c:${colorFor(p.name)}">${esc(initials(p.name))}</span>
             <div class="avm-card-title">
                 <div class="avm-card-name">${esc(p.name)}</div>
                 <div class="avm-card-host">${esc(hostOf(p.url) || '未填地址')}${p.model ? ` · ${esc(p.model)}` : ''}</div>
             </div>
-            ${normalizeSort(store.options.sort) === 'custom' ? `<span class="avm-move">
+            ${selecting ? '' : `${normalizeSort(store.options.sort) === 'custom' ? `<span class="avm-move">
                 <button type="button" class="avm-icon-btn" data-act="move-up" title="上移" aria-label="上移 ${esc(p.name)}"><i class="fa-solid fa-chevron-up"></i></button>
                 <button type="button" class="avm-icon-btn" data-act="move-down" title="下移" aria-label="下移 ${esc(p.name)}"><i class="fa-solid fa-chevron-down"></i></button>
             </span>` : ''}
             <button type="button" class="avm-icon-btn" data-act="edit" title="编辑" aria-label="编辑 ${esc(p.name)}"><i class="fa-solid fa-pen"></i></button>
             ${armedDelete === p.id
                 ? `<button type="button" class="avm-btn is-confirm" data-act="card-delete" title="再点一次删除" aria-label="确认删除 ${esc(p.name)}"><i class="fa-solid fa-trash"></i>确认删除</button>`
-                : `<button type="button" class="avm-icon-btn is-danger" data-act="card-delete" title="删除" aria-label="删除 ${esc(p.name)}"><i class="fa-solid fa-trash"></i></button>`}
+                : `<button type="button" class="avm-icon-btn is-danger" data-act="card-delete" title="删除" aria-label="删除 ${esc(p.name)}"><i class="fa-solid fa-trash"></i></button>`}`}
         </div>
         <div class="avm-card-fields">
             <button type="button" class="avm-field" data-act="copy-url" ${p.url ? '' : 'disabled'} title="复制地址">
@@ -236,6 +241,11 @@ function listView() {
             <button type="button" class="avm-btn" data-act="import" title="扫描酒馆和其他插件里已保存的 API，自己选要导入哪些"><i class="fa-solid fa-magnifying-glass-plus"></i><span class="avm-hide-sm">扫描</span></button>
             <button type="button" class="avm-btn is-primary" data-act="new" title="新建配置"><i class="fa-solid fa-plus"></i><span class="avm-hide-sm">新建</span></button>
         </div>
+        ${store.profiles.length ? `<div class="avm-batchbar">
+            <button type="button" class="avm-btn${selecting ? ' is-on' : ''}" data-act="select-mode" aria-pressed="${selecting}" title="勾选多个配置一起删除">
+                <i class="fa-regular fa-square-check"></i>${selecting ? '退出批量' : '批量删除'}
+            </button>
+        </div>` : ''}
         ${store.profiles.length ? `<div class="avm-sortbar">
             <label class="avm-sort">
                 <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
@@ -248,9 +258,22 @@ function listView() {
         </div>` : ''}
         ${store.options.tagBar ? tagBarHtml(allTags(), activeTag(), store.profiles.length) : ''}
         <div class="avm-list">${list.length ? list.map(p => card(p)).join('') : empty}</div>
-        ${store.profiles.length ? `<div class="avm-list-foot">
+        ${selecting && store.profiles.length ? batchFoot(list) : store.profiles.length ? `<div class="avm-list-foot">
             <button type="button" class="avm-link-btn is-danger" data-act="clear-all"><i class="fa-solid fa-trash-can"></i>清空全部 ${store.profiles.length} 个配置</button>
         </div>` : ''}`;
+}
+
+/** Bottom bar in batch mode. "全选" works on what the search / tag filter shows. */
+function batchFoot(list) {
+    for (const id of [...selected]) if (!store.get(id)) selected.delete(id);
+    const shownIds = list.map(p => p.id);
+    const allShown = shownIds.length > 0 && shownIds.every(id => selected.has(id));
+    return `<div class="avm-batch-foot">
+        <button type="button" class="avm-btn" data-act="select-all" ${shownIds.length ? '' : 'disabled'}>${allShown ? '全不选' : `全选${query || activeTag() ? '当前显示的' : ''}`}</button>
+        <span class="avm-hint">已选 ${selected.size} 个</span>
+        <span class="avm-flex"></span>
+        <button type="button" class="avm-btn is-confirm" data-act="delete-selected" ${selected.size ? '' : 'disabled'}><i class="fa-solid fa-trash"></i>删除选中 ${selected.size} 个</button>
+    </div>`;
 }
 
 function editView() {
@@ -469,6 +492,10 @@ export function render({ force = false } = {}) {
 
 function go(next, id = null) {
     closeModelMenu();
+    if (next !== 'list') {
+        selecting = false;
+        selected.clear();
+    }
     editorEpoch++;
     queryComposing = false;
     view = next;
@@ -933,6 +960,17 @@ async function onClick(e) {
         setModel(modelItem.dataset.model);
         return closeModelMenu();
     }
+    if (selecting && view === 'list') {
+        const card = e.target.closest('.avm-card[data-id]');
+        // The checkbox reports through `change`; anything else on the card (copy, 用于酒馆, test) only toggles,
+        // so picking cards never copies a key or switches ST by accident.
+        if (card && !e.target.closest('.avm-card-check')) {
+            e.preventDefault();
+            const id = card.dataset.id;
+            selected.has(id) ? selected.delete(id) : selected.add(id);
+            return render();
+        }
+    }
     const el = e.target.closest('[data-act], [data-view-btn]');
     if (!el || el.disabled) return;
     if (el.dataset.viewBtn) {
@@ -1141,6 +1179,35 @@ async function onClick(e) {
             }
             return;
         }
+        case 'select-mode': {
+            selecting = !selecting;
+            selected.clear();
+            armedDelete = null;
+            return render();
+        }
+        case 'select-all': {
+            const ids = shownProfiles().map(x => x.id);
+            const all = ids.length > 0 && ids.every(id => selected.has(id));
+            for (const id of ids) all ? selected.delete(id) : selected.add(id);
+            return render();
+        }
+        case 'delete-selected': {
+            const picks = [...selected].map(id => store.get(id)).filter(Boolean);
+            if (!picks.length) return;
+            const names = picks.slice(0, 5).map(x => `「${x.name}」`).join('、') + (picks.length > 5 ? ` 等 ${picks.length} 个` : '');
+            const ok = await confirmDialog(
+                `删除选中的 ${picks.length} 个配置？`,
+                `${names}
+
+只删除管理器里的记录和输入框绑定，酒馆里的密钥、代理预设和各插件自己的设置都不会动。删除后无法恢复。`,
+            );
+            if (!ok) return;
+            store.removeMany(picks.map(x => x.id));
+            selected.clear();
+            selecting = false;
+            toastr.success(`已删除 ${picks.length} 个配置`, TITLE, { timeOut: 2000 });
+            return render();
+        }
         case 'clear-all': {
             const n = store.profiles.length;
             if (!n) return;
@@ -1195,6 +1262,11 @@ function onChange(e) {
         store.setOption('theme', normalizeTheme(t.value));
         if (focused) root.querySelector('[name="avm-theme"]:checked')?.focus({ preventScroll: true });
         return;
+    }
+    if (t.dataset.role === 'select') {
+        const id = t.closest('[data-id]')?.dataset.id;
+        if (id) t.checked ? selected.add(id) : selected.delete(id);
+        return render();
     }
     if (t.dataset.role === 'sort') {
         store.setOption('sort', normalizeSort(t.value));

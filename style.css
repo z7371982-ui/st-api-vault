@@ -551,6 +551,70 @@
     transition: border-color 0.15s, box-shadow 0.15s;
 }
 
+/* ---------- batch delete ---------- */
+
+.avm-batchbar {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.avm-batchbar .avm-btn.is-on {
+    border-color: var(--avm-accent);
+    color: var(--avm-accent);
+}
+
+.avm-card.is-selecting {
+    cursor: pointer;
+    user-select: none;
+}
+
+/* The card's own buttons are inert while picking; a tap on them selects the card instead. */
+.avm-card.is-selecting .avm-card-fields,
+.avm-card.is-selecting .avm-card-actions {
+    opacity: 0.55;
+}
+
+.avm-card.is-selecting .avm-card-fields button,
+.avm-card.is-selecting .avm-card-actions button {
+    pointer-events: none;
+}
+
+.avm-card.is-picked {
+    border-color: var(--avm-danger);
+    box-shadow: 0 0 0 1px var(--avm-danger) inset;
+}
+
+.avm-root .avm-card-check {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    accent-color: var(--avm-danger);
+    cursor: pointer;
+}
+
+/* Sticks to the bottom of the scrolling list, so the delete button is always in reach. */
+.avm-batch-foot {
+    position: sticky;
+    /* .avm-body has 14px padding; reach its edges so cards never show around the bar. */
+    bottom: -14px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 -14px -14px;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--avm-line);
+    background: var(--avm-bg);
+    box-shadow: 0 -6px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* An empty selection: keep the button red but clearly unavailable. */
+.avm-batch-foot .avm-btn.is-confirm:disabled {
+    opacity: 0.45;
+    animation: none;
+}
+
 .avm-card:hover {
     border-color: rgba(128,128,128,0.29);
     border-color: color-mix(in srgb, var(--avm-fg) 24%, transparent);

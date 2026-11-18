@@ -74,6 +74,16 @@ export const store = {
         this.save();
     },
 
+    /** Removes several profiles and their bindings with one save. */
+    removeMany(ids) {
+        const drop = new Set(ids);
+        const s = this.settings;
+        s.profiles = s.profiles.filter(p => !drop.has(p.id));
+        for (const [fp, b] of Object.entries(s.bindings)) if (drop.has(b.profileId)) delete s.bindings[fp];
+        s.options.order = (s.options.order || []).filter(id => !drop.has(id));
+        this.save();
+    },
+
     /** Drops every profile and binding. Seen refs go too, so a later scan offers everything again. */
     clearAll() {
         const s = this.settings;
