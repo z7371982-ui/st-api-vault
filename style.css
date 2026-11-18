@@ -401,46 +401,97 @@
     gap: 8px;
 }
 
-.avm-sortbar {
+.avm-listbar {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 6px 10px;
+    gap: 6px;
+    min-height: 30px;
+    margin-top: -4px;
 }
 
-.avm-sort {
+.avm-list-count {
+    margin-right: auto;
+    font-size: 0.8em;
+    color: var(--avm-muted);
+    white-space: nowrap;
+}
+
+/* Small secondary controls for the list (sort, batch): lighter than the toolbar's main buttons. */
+.avm-root .avm-chip-control {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-size: 0.84em;
+    gap: 5px;
+    height: 28px;
+    margin: 0;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: var(--avm-faint);
     color: var(--avm-muted);
+    font: inherit;
+    font-size: 0.8em;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.avm-root .avm-sort select {
+.avm-root .avm-chip-control:hover {
+    color: var(--avm-fg);
+    background: var(--avm-accent-soft);
+}
+
+.avm-root .avm-chip-control > i {
+    font-size: 0.95em;
+}
+
+.avm-root .avm-chip-control.is-on {
+    border-color: var(--avm-danger);
+    background: transparent;
+    color: var(--avm-danger);
+}
+
+/* Phones: the select needs 16px so iOS does not zoom in on it; the pill's label matches it. */
+@media (max-width: 768px) {
+    .avm-root .avm-chip-control {
+        height: 32px;
+        font-size: 15px;
+    }
+    .avm-list-count {
+        font-size: 13px;
+    }
+}
+
+/* The select fills the pill; its own box is invisible so the pill is the only border. */
+.avm-root .avm-chip-control select {
+    appearance: none;
+    -webkit-appearance: none;
     width: auto;
     min-width: 0;
-    height: 30px;
+    height: 100%;
     margin: 0;
-    padding: 0 8px;
-    border: 1px solid var(--avm-line);
-    border-radius: 8px;
-    background: var(--avm-input-bg);
-    color: var(--avm-fg);
+    padding: 0 14px 0 0;
+    border: 0;
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right center;
+    color: inherit;
     font: inherit;
+    cursor: pointer;
+    outline: 0;
+    box-shadow: none;
 }
 
-.avm-root .avm-sort select option {
+.avm-root .avm-chip-control select option {
     background: var(--avm-theme-input, var(--SmartThemeChatTintColor, #222));
     color: var(--avm-fg);
 }
 
-.avm-root .avm-sort select:focus {
+.avm-root .avm-chip-control:focus-within {
     border-color: var(--avm-accent);
-    outline: 0;
 }
 
-.avm-sortbar .avm-hint {
-    flex: 1 1 100%;
+.avm-listbar-hint {
+    margin-top: -6px;
 }
 
 .avm-move {
@@ -552,16 +603,6 @@
 }
 
 /* ---------- batch delete ---------- */
-
-.avm-batchbar {
-    display: flex;
-    justify-content: flex-end;
-}
-
-.avm-batchbar .avm-btn.is-on {
-    border-color: var(--avm-accent);
-    color: var(--avm-accent);
-}
 
 .avm-card.is-selecting {
     cursor: pointer;

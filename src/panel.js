@@ -241,21 +241,20 @@ function listView() {
             <button type="button" class="avm-btn" data-act="import" title="扫描酒馆和其他插件里已保存的 API，自己选要导入哪些"><i class="fa-solid fa-magnifying-glass-plus"></i><span class="avm-hide-sm">扫描</span></button>
             <button type="button" class="avm-btn is-primary" data-act="new" title="新建配置"><i class="fa-solid fa-plus"></i><span class="avm-hide-sm">新建</span></button>
         </div>
-        ${store.profiles.length ? `<div class="avm-batchbar">
-            <button type="button" class="avm-btn${selecting ? ' is-on' : ''}" data-act="select-mode" aria-pressed="${selecting}" title="勾选多个配置一起删除">
-                <i class="fa-regular fa-square-check"></i>${selecting ? '退出批量' : '批量删除'}
-            </button>
-        </div>` : ''}
-        ${store.profiles.length ? `<div class="avm-sortbar">
-            <label class="avm-sort">
+        ${store.profiles.length ? `<div class="avm-listbar">
+            <span class="avm-list-count">${list.length === store.profiles.length ? `共 ${list.length} 个` : `${list.length} / ${store.profiles.length} 个`}</span>
+            <label class="avm-chip-control" title="列表排序">
                 <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
-                <span>排序</span>
                 <select data-role="sort" aria-label="列表排序">
                     ${SORTS.map(([v, label]) => `<option value="${v}" ${normalizeSort(store.options.sort) === v ? 'selected' : ''}>${label}</option>`).join('')}
                 </select>
             </label>
-            ${normalizeSort(store.options.sort) === 'custom' ? '<span class="avm-hint">用卡片右上的 ↑ ↓ 调整顺序，钥匙按钮弹出的列表也按这个顺序</span>' : ''}
-        </div>` : ''}
+            <button type="button" class="avm-chip-control${selecting ? ' is-on' : ''}" data-act="select-mode" aria-pressed="${selecting}" title="勾选多个配置一起删除">
+                <i class="fa-solid fa-${selecting ? 'xmark' : 'list-check'}" aria-hidden="true"></i><span>${selecting ? '完成' : '批量删除'}</span>
+            </button>
+        </div>
+        ${normalizeSort(store.options.sort) === 'custom' && !selecting ? '<span class="avm-hint avm-listbar-hint">用卡片右上的 ↑ ↓ 调整顺序，钥匙按钮弹出的列表也按这个顺序</span>' : ''}
+        ${selecting ? '<span class="avm-hint avm-listbar-hint">点卡片勾选要删除的配置，底部确认删除</span>' : ''}` : ''}
         ${store.options.tagBar ? tagBarHtml(allTags(), activeTag(), store.profiles.length) : ''}
         <div class="avm-list">${list.length ? list.map(p => card(p)).join('') : empty}</div>
         ${selecting && store.profiles.length ? batchFoot(list) : store.profiles.length ? `<div class="avm-list-foot">
