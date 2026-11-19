@@ -809,7 +809,10 @@ export async function syncToST(profile, target, { remember = true } = {}) {
     requireLiveProfile(p);
     // A key imported from secrets.json with only a mask cannot become a proxy preset; switch its slot instead.
     const maskedOnly = !p.key && p.stRef && !p.stMissing ? p.stRef.key : '';
-    const slotTarget = target || (p.syncTarget && p.syncTarget !== 'none' ? p.syncTarget : '') || maskedOnly;
+    // ST on "自定义（兼容 OpenAI）": fill its own URL + key there and keep the source, rather than switching
+    // ST to OpenAI just to use a proxy preset. Only for the default route; an explicit slot choice still wins.
+    const followCustom = !target && !p.syncTarget && p.key && p.url ? st.keepsOwnUrl() : '';
+    const slotTarget = target || (p.syncTarget && p.syncTarget !== 'none' ? p.syncTarget : '') || maskedOnly || followCustom;
 
     // Default: use it through a reverse proxy preset, which is how relays are set up in ST.
     // Only an explicitly chosen secret slot (advanced) goes into secrets.json.
@@ -837,7 +840,7 @@ export async function syncToST(profile, target, { remember = true } = {}) {
     const key = await resolveKey(p);
     const linked = p.stRef?.key === slot && !p.stMissing;
     // A pick into ST's own key box is a one-off: the profile's "在酒馆里怎么用" choice stays as it was.
-    const syncTarget = remember ? slot : p.syncTarget;
+    const syncTarget = remember && !followCustom ? slot : p.syncTarget;
     const unchanged = linked && (!key || p.syncedHash === hashKey(key));
 
     // The same key may already be stored in this slot (saved by ST's own Connect, another profile, or an

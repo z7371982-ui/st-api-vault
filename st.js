@@ -379,6 +379,17 @@ export const st = {
         return changed.join('、');
     },
 
+    /**
+     * The chat completion source ST is set to right now, when that source cannot use a reverse proxy but
+     * takes its own URL + key: "自定义（兼容 OpenAI）". Profiles applied there should stay there instead of
+     * turning ST into "OpenAI + 反向代理", which users read as the switch having gone wrong.
+     */
+    keepsOwnUrl() {
+        const api = document.getElementById('main_api')?.value;
+        const source = ctx.chatCompletionSettings?.chat_completion_source;
+        return api === 'openai' && source === 'custom' ? 'api_key_custom' : '';
+    },
+
     /** Whether ST is sending through a reverse proxy right now; its API key slot is ignored then. */
     proxyInUse() {
         const s = ctx.chatCompletionSettings;

@@ -366,7 +366,7 @@ function editView() {
                         ${slots.map(k => `<option value="${esc(k)}" ${k === current ? 'selected' : ''}>${esc(st.providerName(k))} 密钥</option>`).join('')}
                     </optgroup>
                 </select>
-                <span class="avm-hint">默认存成酒馆「反向代理 → 代理预设」里的一项，点「用于酒馆」就是在下拉框里选中它。只有直接用官方 API、不走反代时，才需要选下面的密钥栏。</span>
+                <span class="avm-hint">默认存成酒馆「反向代理 → 代理预设」里的一项，点「用于酒馆」就是在下拉框里选中它。酒馆当前的聊天补全来源是「自定义（兼容 OpenAI）」时，会直接填进它的端点和密钥，来源保持不变。只有直接用官方 API、不走反代时，才需要选下面的密钥栏。</span>
             </label>
             <label class="avm-label">备注
                 <textarea name="note" rows="2" placeholder="额度、到期时间、用途……">${esc(v.note)}</textarea>
